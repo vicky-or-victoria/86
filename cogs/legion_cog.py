@@ -14,7 +14,11 @@ from utils.hexmap import OUTER_LABELS, SAFE_HUB, SUB_POSITIONS, outer_of, level_
 
 
 async def is_gm(interaction: discord.Interaction) -> bool:
-    """Check if user is server owner or has the Gamemaster role."""
+    """Check if user is the bot owner, server owner, or has the Gamemaster role."""
+    # Bot owner always has GM access in any server
+    bot_owner_id = getattr(interaction.client, "bot_owner_id", 0)
+    if bot_owner_id and interaction.user.id == bot_owner_id:
+        return True
     if interaction.guild.owner_id == interaction.user.id:
         return True
     pool = await get_pool()
@@ -160,7 +164,9 @@ class LegionCog(commands.Cog):
                           description="[Owner] Set the role that can control the Legion.")
     @app_commands.describe(role="The role to grant Gamemaster powers")
     async def set_gm_role(self, interaction: discord.Interaction, role: discord.Role):
-        if interaction.guild.owner_id != interaction.user.id:
+        bot_owner_id = getattr(interaction.client, "bot_owner_id", 0)
+        is_bot_owner = bot_owner_id and interaction.user.id == bot_owner_id
+        if not is_bot_owner and interaction.guild.owner_id != interaction.user.id:
             await interaction.response.send_message("❌ Server owner only.", ephemeral=True)
             return
         await ensure_guild(interaction.guild_id)
