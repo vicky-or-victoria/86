@@ -45,7 +45,7 @@ class EightySixBot(commands.Bot):
     async def on_ready(self):
         log.info(f"Logged in as {self.user} (ID: {self.user.id})")
         await self.change_presence(
-            activity=discord.Activity(type=discord.ActivityType.watching, name="the front lines")
+            activity=discord.Activity(type=discord.ActivityType.playing, name="Fighting at the Front Lines")
         )
 
     async def close(self):
