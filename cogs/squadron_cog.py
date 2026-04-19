@@ -634,6 +634,9 @@ class SquadronCog(commands.Cog):
         description="[GM/Admin] Post the Handler registration embed to this channel.",
     )
     async def post_registration(self, interaction: discord.Interaction):
+        # Defer immediately to avoid Discord's 3-second timeout
+        await interaction.response.defer(ephemeral=False)
+
         await ensure_guild(interaction.guild_id)
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -650,21 +653,22 @@ class SquadronCog(commands.Cog):
                 interaction.guild_id, SAFE_HUB,
             )
         gm_role_id = config["gamemaster_role_id"] if config else None
+        bot_owner_id = getattr(interaction.client, "bot_owner_id", 0)
         is_privileged = (
-            interaction.guild.owner_id == interaction.user.id
+            (bot_owner_id and interaction.user.id == bot_owner_id)
+            or interaction.guild.owner_id == interaction.user.id
             or interaction.user.guild_permissions.administrator
             or (gm_role_id and any(r.id == gm_role_id for r in interaction.user.roles))
         )
         if not is_privileged:
-            await interaction.response.send_message("❌ GMs and admins only.", ephemeral=True)
+            await interaction.followup.send("❌ GMs and admins only.", ephemeral=True)
             return
 
         all_legion = all(r["status"] in _LEGION_STATUSES for r in outer_rows) if outer_rows else False
         embed = _build_registration_embed(count or 0, all_legion)
         view = RegistrationView() if not all_legion else discord.ui.View()
-        await interaction.response.send_message(embed=embed, view=view)
+        sent = await interaction.followup.send(embed=embed, view=view)
 
-        sent = await interaction.original_response()
         _registration_messages[interaction.guild_id] = {
             "channel_id": interaction.channel_id,
             "message_id": sent.id,
@@ -675,6 +679,9 @@ class SquadronCog(commands.Cog):
         description="[GM/Admin] Post the Handler HQ menu embed to this channel.",
     )
     async def post_hq(self, interaction: discord.Interaction):
+        # Defer immediately to avoid Discord's 3-second timeout
+        await interaction.response.defer(ephemeral=False)
+
         await ensure_guild(interaction.guild_id)
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -683,13 +690,15 @@ class SquadronCog(commands.Cog):
                 interaction.guild_id,
             )
         gm_role_id = config["gamemaster_role_id"] if config else None
+        bot_owner_id = getattr(interaction.client, "bot_owner_id", 0)
         is_privileged = (
-            interaction.guild.owner_id == interaction.user.id
+            (bot_owner_id and interaction.user.id == bot_owner_id)
+            or interaction.guild.owner_id == interaction.user.id
             or interaction.user.guild_permissions.administrator
             or (gm_role_id and any(r.id == gm_role_id for r in interaction.user.roles))
         )
         if not is_privileged:
-            await interaction.response.send_message("❌ GMs and admins only.", ephemeral=True)
+            await interaction.followup.send("❌ GMs and admins only.", ephemeral=True)
             return
 
         embed = discord.Embed(
@@ -704,7 +713,7 @@ class SquadronCog(commands.Cog):
             color=discord.Color.from_rgb(30, 60, 120),
         )
         embed.set_footer(text="86 — Eighty Six | All responses are private.")
-        await interaction.response.send_message(embed=embed, view=HQView())
+        await interaction.followup.send(embed=embed, view=HQView())
 
     @app_commands.command(name="squadron_move", description="Move your squadron to a level-3 hex.")
     @app_commands.describe(
