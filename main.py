@@ -9,7 +9,8 @@ from utils.db import init_schema, close_pool
 from utils.turn_engine import TurnEngine
 
 
-BOT_OWNER_ID: int = 795733380532404224
+_raw_owner = os.environ.get("BOT_OWNER_ID", "0")
+BOT_OWNER_ID: int = int(_raw_owner) if _raw_owner.isdigit() else 0
 
 logging.basicConfig(
     level=logging.INFO,
