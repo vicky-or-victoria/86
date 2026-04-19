@@ -321,3 +321,40 @@ async def ensure_hexes(guild_id: int, conn):
                        VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (guild_id, address) DO NOTHING""",
                     guild_id, inner, 3, mid, mid_ctrl, mid_status
                 )
+
+
+# ── Pushback helpers ──────────────────────────────────────────────────────────
+
+def adjacent_outer_hexes(outer: str) -> list[str]:
+    """
+    Return the geometrically adjacent outer hexes to the given outer hex.
+    A is adjacent to all of B–G.
+    B–G are each adjacent to A and their two ring neighbours.
+
+    Ring order: B=1, C=2, D=3, E=4, F=5, G=6
+    """
+    if outer == SAFE_HUB:
+        return list(_OUTER_RING_ORDER)  # A touches all
+
+    try:
+        idx = _OUTER_RING_ORDER.index(outer)  # 0-based
+    except ValueError:
+        return [SAFE_HUB]
+
+    n = len(_OUTER_RING_ORDER)
+    left  = _OUTER_RING_ORDER[(idx - 1) % n]
+    right = _OUTER_RING_ORDER[(idx + 1) % n]
+    return [SAFE_HUB, left, right]
+
+
+def adjacent_mid_clusters(mid: str) -> list[str]:
+    """
+    Return the adjacent level-2 cluster addresses within the same outer hex,
+    based on the ring map.  mid is e.g. 'B-2'.
+    """
+    parts = mid.split("-")
+    if len(parts) != 2:
+        return []
+    outer, pos = parts[0], parts[1]
+    neighbour_positions = _MID_RING_NEIGHBORS.get(pos, [])
+    return [f"{outer}-{p}" for p in neighbour_positions]
