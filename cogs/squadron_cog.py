@@ -509,16 +509,17 @@ async def _hq_scavenge(interaction: discord.Interaction):
     """
     Attempt to scavenge supply from the current sector.
     Only usable outside the Citadel Hub A.
+    Limited to ONE attempt per turn per Handler.
       - Roll 4–6: gain 2 supply (capped at 20).
       - Roll 1–3: nothing found.
     """
-    SCAVENGE_CAP   = 20
-    SCAVENGE_GAIN  = 2
+    SCAVENGE_CAP  = 20
+    SCAVENGE_GAIN = 2
     await ensure_guild(interaction.guild_id)
     pool = await get_pool()
     async with pool.acquire() as conn:
         sq = await conn.fetchrow(
-            "SELECT id, name, hex_address, supply FROM squadrons "
+            "SELECT id, name, hex_address, supply, last_scavenged_turn FROM squadrons "
             "WHERE guild_id=$1 AND owner_id=$2 AND is_active=TRUE LIMIT 1",
             interaction.guild_id, interaction.user.id,
         )
@@ -534,27 +535,48 @@ async def _hq_scavenge(interaction: discord.Interaction):
                 ephemeral=True)
             return
 
+        # Derive current turn number the same way the turn engine does
+        current_turn = await conn.fetchval(
+            "SELECT COUNT(*) FROM turn_history WHERE guild_id=$1",
+            interaction.guild_id,
+        )
+        last_scavenged = sq["last_scavenged_turn"] if sq["last_scavenged_turn"] is not None else -1
+
+        if last_scavenged >= current_turn:
+            await interaction.response.send_message(
+                "⏳ **Scavenge on cooldown.** Your Number has already swept this sector this turn.\n"
+                "> One scavenge attempt is allowed per Legion advance.",
+                ephemeral=True)
+            return
+
         roll = random.randint(1, 6)
         if roll >= 4:
             new_supply = min(SCAVENGE_CAP, sq["supply"] + SCAVENGE_GAIN)
             gained     = new_supply - sq["supply"]
             await conn.execute(
-                "UPDATE squadrons SET supply=$1 WHERE id=$2", new_supply, sq["id"]
+                "UPDATE squadrons SET supply=$1, last_scavenged_turn=$2 WHERE id=$3",
+                new_supply, current_turn, sq["id"]
             )
             embed = discord.Embed(
                 title="🎒 Scavenge — Supplies Recovered",
                 description=(
                     f"**{sq['name']}** recovered usable parts at `{sq['hex_address']}`.\n"
-                    f"> Supply: `{sq['supply']}` → `{new_supply}` (+{gained})"
+                    f"> Supply: `{sq['supply']}` → `{new_supply}` (+{gained})\n\n"
+                    f"*Next scavenge available after the Legion's next advance.*"
                 ),
                 color=discord.Color.green(),
             )
         else:
+            await conn.execute(
+                "UPDATE squadrons SET last_scavenged_turn=$1 WHERE id=$2",
+                current_turn, sq["id"]
+            )
             embed = discord.Embed(
                 title="🎒 Scavenge — Nothing Found",
                 description=(
                     f"**{sq['name']}** swept `{sq['hex_address']}` but the sector was picked clean.\n"
-                    f"> Supply remains at `{sq['supply']}`."
+                    f"> Supply remains at `{sq['supply']}`.\n\n"
+                    f"*Next scavenge available after the Legion's next advance.*"
                 ),
                 color=discord.Color.dark_gray(),
             )
