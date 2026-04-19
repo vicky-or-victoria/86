@@ -107,6 +107,7 @@ class TurnEngine:
 
     # ── Player transit ────────────────────────────────────────────────────────
     async def _process_transit(self, conn, guild_id: int, summaries: list):
+        from utils.hexmap import entry_hex_for_outer, SAFE_HUB, outer_of
         in_transit = await conn.fetch(
             "SELECT id, name, owner_name, hex_address, transit_destination, transit_step "
             "FROM squadrons WHERE guild_id=$1 AND in_transit=TRUE AND is_active=TRUE",
@@ -116,22 +117,30 @@ class TurnEngine:
             step = sq["transit_step"]
             dest = sq["transit_destination"]
             if step == 1:
-                # Step 1: move to Hex A
+                # Step 1: move to Hub A — land at the facing corner of A
+                current_outer = outer_of(sq["hex_address"])
+                hub_entry = entry_hex_for_outer(SAFE_HUB, current_outer)
                 await conn.execute(
                     "UPDATE squadrons SET hex_address=$1, transit_step=2, home_outer=$2 "
                     "WHERE id=$3",
-                    SAFE_HUB, SAFE_HUB, sq["id"]
+                    hub_entry, SAFE_HUB, sq["id"]
                 )
-                summaries.append(f"🚶 **{sq['owner_name']}'s {sq['name']}** arrived at Hex A (en route to {dest}).")
+                summaries.append(
+                    f"🚶 **{sq['owner_name']}'s {sq['name']}** arrived at Hub A "
+                    f"(`{hub_entry}`, en route to Hex {dest})."
+                )
             elif step == 2:
-                # Step 2: move from A to destination
+                # Step 2: move to the final destination (already a level-3 address)
+                dest_outer = outer_of(dest)
                 await conn.execute(
-                    "UPDATE squadrons SET hex_address=$1, home_outer=$1, "
+                    "UPDATE squadrons SET hex_address=$1, home_outer=$2, "
                     "in_transit=FALSE, transit_destination=NULL, transit_step=0 "
-                    "WHERE id=$2",
-                    dest, sq["id"]
+                    "WHERE id=$3",
+                    dest, dest_outer, sq["id"]
                 )
-                summaries.append(f"✅ **{sq['owner_name']}'s {sq['name']}** deployed to Hex {dest}.")
+                summaries.append(
+                    f"✅ **{sq['owner_name']}'s {sq['name']}** deployed to `{dest}`."
+                )
 
     # ── GM Legion moves ───────────────────────────────────────────────────────
     async def _apply_gm_moves(self, conn, guild_id: int, summaries: list):
@@ -152,14 +161,19 @@ class TurnEngine:
     # ── Legion AI ─────────────────────────────────────────────────────────────
     async def _legion_ai(self, conn, guild_id: int, summaries: list):
         """
-        For each Legion unit not manually moved this turn:
-          - If on outer hex: try to advance into a mid hex inside it
-          - If on mid hex: try to advance into an inner hex
-          - If on inner hex: stay (already at deepest)
-        Also spawn new units on neutral outer hexes (B-G only).
-        Legion never enters Hex A.
+        Legion units live exclusively at level 3.
+        - Spawn: pick a random level-3 hex inside a neutral outer hex (not A).
+        - Advance: move to an adjacent level-3 hex within the same outer hex,
+          preferring neutral > player-controlled. Can cross cluster boundaries
+          if at an edge inner position.
+        Legion never enters any hex inside Hex A.
         """
-        # Spawn on neutral outer hexes (B-G)
+        from utils.hexmap import (
+            SAFE_HUB, outer_of, mid_of, inner_pos,
+            is_edge_inner, adjacent_inner_clusters, sub_addresses, SUB_POSITIONS
+        )
+
+        # ── Spawn on neutral outer hexes (B–G only) ──────────────────────────
         neutral_outer = await conn.fetch(
             "SELECT address FROM hexes "
             "WHERE guild_id=$1 AND level=1 AND controller='neutral' AND address != $2",
@@ -167,19 +181,23 @@ class TurnEngine:
         )
         spawn_candidates = [r["address"] for r in neutral_outer]
         random.shuffle(spawn_candidates)
-        for addr in spawn_candidates[:2]:
-            unit = legion_unit_for_hex(addr)
+        for outer_addr in spawn_candidates[:2]:
+            # Pick a random level-3 hex inside this outer hex
+            mid_pos_choice = random.choice(SUB_POSITIONS)
+            inner_pos_choice = random.choice(SUB_POSITIONS)
+            spawn_addr = f"{outer_addr}-{mid_pos_choice}-{inner_pos_choice}"
+            unit = legion_unit_for_hex(spawn_addr)
             await conn.execute(
                 """INSERT INTO legion_units
                    (guild_id, unit_type, hex_address, attack, defense, speed, morale, supply, recon, manually_moved)
                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,TRUE)""",
-                guild_id, _random_unit_type(), addr,
+                guild_id, _random_unit_type(), spawn_addr,
                 unit.attack, unit.defense, unit.speed,
                 unit.morale, unit.supply, unit.recon
             )
-            summaries.append(f"🔴 **Legion** spawned at outer Hex **{addr}**.")
+            summaries.append(f"🔴 **Legion** spawned at `{spawn_addr}`.")
 
-        # Move existing unmoved units inward
+        # ── Move existing unmoved units ───────────────────────────────────────
         units = await conn.fetch(
             "SELECT id, hex_address, unit_type FROM legion_units "
             "WHERE guild_id=$1 AND is_active=TRUE AND manually_moved=FALSE",
@@ -187,36 +205,54 @@ class TurnEngine:
         )
         for unit in units:
             addr = unit["hex_address"]
-            outer = outer_of(addr)
-            if outer == SAFE_HUB:
-                continue  # never enter A
+            if outer_of(addr) == SAFE_HUB:
+                continue  # never enter Hex A
 
-            level = addr.count("-") + 1
-            if level == 3:
-                continue  # already at deepest
+            current_mid = mid_of(addr)
 
-            # Find child hexes that aren't player-controlled
-            children = await conn.fetch(
-                "SELECT address, controller FROM hexes "
-                "WHERE guild_id=$1 AND parent_address=$2 AND controller != 'players'",
-                guild_id, addr
-            )
-            if not children:
-                # All children are player-controlled — attack anyway
-                children = await conn.fetch(
-                    "SELECT address, controller FROM hexes "
-                    "WHERE guild_id=$1 AND parent_address=$2",
-                    guild_id, addr
-                )
-            if not children:
+            # Build candidate level-3 hexes to move into:
+            # 1. Other positions within same cluster
+            candidates = []
+            for pos in SUB_POSITIONS:
+                candidate = f"{current_mid}-{pos}"
+                if candidate != addr:
+                    candidates.append(candidate)
+
+            # 2. If at an edge inner hex, also consider adjacent clusters
+            if is_edge_inner(addr):
+                adj_mids = adjacent_inner_clusters(addr)
+                for adj_mid in adj_mids:
+                    if outer_of(adj_mid) == SAFE_HUB:
+                        continue
+                    # Enter at the center of the adjacent cluster
+                    candidates.append(f"{adj_mid}-C")
+
+            if not candidates:
                 continue
 
-            # Prefer neutral, then player
-            neutrals = [c for c in children if c["controller"] == "neutral"]
-            target = random.choice(neutrals) if neutrals else random.choice(list(children))
+            # Fetch controllers for all candidates
+            ctrl_rows = await conn.fetch(
+                "SELECT address, controller FROM hexes "
+                "WHERE guild_id=$1 AND address = ANY($2::text[])",
+                guild_id, candidates
+            )
+            ctrl_map = {r["address"]: r["controller"] for r in ctrl_rows}
+
+            # Prefer neutral, then player (attack), skip legion-only hexes unless no choice
+            neutrals = [c for c in candidates if ctrl_map.get(c) == "neutral"]
+            players  = [c for c in candidates if ctrl_map.get(c) == "players"]
+            others   = [c for c in candidates if ctrl_map.get(c) not in ("neutral", "players")]
+
+            if neutrals:
+                target = random.choice(neutrals)
+            elif players:
+                target = random.choice(players)
+            else:
+                target = random.choice(others) if others else random.choice(candidates)
+
             await conn.execute(
                 "UPDATE legion_units SET hex_address=$1 WHERE id=$2",
-                target["address"], unit["id"]
+                target, unit["id"]
             )
 
     # ── Combat resolution ─────────────────────────────────────────────────────
