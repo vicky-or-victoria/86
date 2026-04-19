@@ -1,7 +1,7 @@
 """
 Legion control cog — for the bot owner and users with the Gamemaster role.
-GMs can move Legion units manually before each turn resolves.
-Unmoved units will be handled by the AI.
+GMs can order Legion units manually before each turn resolves.
+Unmoved units will be handled autonomously by the hivemind AI.
 """
 
 import random
@@ -15,6 +15,7 @@ from utils.hexmap import OUTER_LABELS, SAFE_HUB, SUB_POSITIONS, outer_of, level_
 
 async def is_gm(interaction: discord.Interaction) -> bool:
     """Check if user is the bot owner, server owner, or has the Gamemaster role."""
+    # Bot owner (BOT_OWNER_ID env var) has GM access in every server
     bot_owner_id = getattr(interaction.client, "bot_owner_id", 0)
     if bot_owner_id and interaction.user.id == bot_owner_id:
         return True
@@ -49,7 +50,7 @@ class LegionCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="legion_list", description="[GM] List all active Legion units.")
+    @app_commands.command(name="legion_list", description="[GM] List all active Legion units on the front.")
     async def legion_list(self, interaction: discord.Interaction):
         if not await is_gm(interaction):
             await interaction.response.send_message("❌ Gamemaster only.", ephemeral=True)
@@ -62,20 +63,20 @@ class LegionCog(commands.Cog):
                 interaction.guild_id
             )
         if not units:
-            await interaction.response.send_message("No active Legion units.", ephemeral=True)
+            await interaction.response.send_message("No active Legion units on the front.", ephemeral=True)
             return
-        embed = discord.Embed(title="🔴 Active Legion Units", color=discord.Color.red())
+        embed = discord.Embed(title="🔴 Active Legion Units — The Hivemind", color=discord.Color.red())
         lines = []
         for u in units:
-            moved = "🎮 GM moved" if u["manually_moved"] else "🤖 AI"
+            moved = "🎮 GM directed" if u["manually_moved"] else "🤖 Hivemind"
             lines.append(f"`ID {u['id']}` **{u['unit_type']}** @ `{u['hex_address']}` — {moved}")
         embed.description = "\n".join(lines)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="legion_move", description="[GM] Order a Legion unit to move to a hex.")
+    @app_commands.command(name="legion_move", description="[GM] Direct a Legion unit to a sector.")
     @app_commands.describe(
         unit_id="Legion unit ID (from /legion_list)",
-        address="Target hex address (level-3 preferred; coarser picks randomly within)",
+        address="Target sector address (level-3 preferred; coarser picks randomly within)",
     )
     async def legion_move(self, interaction: discord.Interaction, unit_id: int, address: str):
         if not await is_gm(interaction):
@@ -84,7 +85,7 @@ class LegionCog(commands.Cog):
         address = address.strip().upper()
         if outer_of(address) == SAFE_HUB:
             await interaction.response.send_message(
-                "❌ Legion cannot enter Hex A or any of its sub-hexes.", ephemeral=True)
+                "❌ The Legion cannot breach the Citadel — Sector A is off limits.", ephemeral=True)
             return
         resolved = _resolve_to_level3(address)
         pool = await get_pool()
@@ -104,7 +105,7 @@ class LegionCog(commands.Cog):
             )
             if not hex_exists:
                 await interaction.response.send_message(
-                    f"❌ Hex `{resolved}` doesn't exist. Has the game been started?", ephemeral=True)
+                    f"❌ Sector `{resolved}` doesn't exist. Has the war been started with `/game_start`?", ephemeral=True)
                 return
             await conn.execute(
                 """INSERT INTO legion_gm_moves (guild_id, legion_unit_id, target_address)
@@ -114,13 +115,13 @@ class LegionCog(commands.Cog):
             )
         note = f" (resolved from `{address}`)" if resolved != address else ""
         await interaction.response.send_message(
-            f"🎮 Queued: **Legion {unit['unit_type']}** (ID {unit_id}) → `{resolved}`{note} next turn.",
+            f"🎮 Directed: **Legion {unit['unit_type']}** (ID {unit_id}) → `{resolved}`{note} next advance.",
             ephemeral=True
         )
 
-    @app_commands.command(name="legion_spawn", description="[GM] Manually spawn a Legion unit at a hex.")
+    @app_commands.command(name="legion_spawn", description="[GM] Manually deploy a Legion unit to a sector.")
     @app_commands.describe(
-        address="Hex address (e.g. 'G', 'G-3', or 'G-3-2'). Coarser addresses spawn randomly within.",
+        address="Sector address (e.g. 'G', 'G-3', or 'G-3-2'). Coarser addresses spawn randomly within.",
         unit_type="Unit type (Grauwolf, Löwe, Dinosauria, Juggernaut, Shepherd)",
     )
     async def legion_spawn(self, interaction: discord.Interaction, address: str,
@@ -130,7 +131,8 @@ class LegionCog(commands.Cog):
             return
         address = address.strip().upper()
         if outer_of(address) == SAFE_HUB:
-            await interaction.response.send_message("❌ Legion cannot spawn in Hex A.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ The Legion cannot breach the Citadel — Sector A is off limits.", ephemeral=True)
             return
         resolved = _resolve_to_level3(address)
         from utils.combat import legion_unit_for_hex
@@ -143,7 +145,7 @@ class LegionCog(commands.Cog):
             )
             if not hex_exists:
                 await interaction.response.send_message(
-                    f"❌ Hex `{resolved}` doesn't exist. Has the game been started with `/game_start`?",
+                    f"❌ Sector `{resolved}` doesn't exist. Has the war been started with `/game_start`?",
                     ephemeral=True)
                 return
             await conn.execute(
@@ -156,12 +158,12 @@ class LegionCog(commands.Cog):
             )
         note = f" (randomly placed within `{address}`)" if resolved != address else ""
         await interaction.response.send_message(
-            f"🔴 Spawned **Legion {unit_type}** at `{resolved}`{note}.", ephemeral=False
+            f"🔴 Deployed **Legion {unit_type}** at `{resolved}`{note}.", ephemeral=False
         )
 
     @app_commands.command(name="set_gamemaster_role",
-                          description="[Owner] Set the role that can control the Legion.")
-    @app_commands.describe(role="The role to grant Gamemaster powers")
+                          description="[Owner] Assign the role that controls the Legion hivemind.")
+    @app_commands.describe(role="The role to grant Gamemaster powers over the Legion")
     async def set_gm_role(self, interaction: discord.Interaction, role: discord.Role):
         bot_owner_id = getattr(interaction.client, "bot_owner_id", 0)
         is_bot_owner = bot_owner_id and interaction.user.id == bot_owner_id
@@ -176,10 +178,10 @@ class LegionCog(commands.Cog):
                 role.id, interaction.guild_id
             )
         await interaction.response.send_message(
-            f"✅ **{role.name}** is now the Gamemaster role.", ephemeral=False
+            f"✅ **{role.name}** is now the Gamemaster role — the hivemind answers to them.", ephemeral=False
         )
 
-    @app_commands.command(name="legion_pending", description="[GM] View queued Legion moves for this turn.")
+    @app_commands.command(name="legion_pending", description="[GM] View queued Legion directives for this advance.")
     async def legion_pending(self, interaction: discord.Interaction):
         if not await is_gm(interaction):
             await interaction.response.send_message("❌ Gamemaster only.", ephemeral=True)
@@ -194,17 +196,20 @@ class LegionCog(commands.Cog):
                 interaction.guild_id
             )
         if not moves:
-            await interaction.response.send_message("No pending GM moves this turn.", ephemeral=True)
+            await interaction.response.send_message("No pending GM directives this advance.", ephemeral=True)
             return
         lines = [
             f"`ID {m['legion_unit_id']}` **{m['unit_type']}**: `{m['hex_address']}` → `{m['target_address']}`"
             for m in moves
         ]
-        embed = discord.Embed(title="🎮 Pending Legion Moves", description="\n".join(lines),
-                               color=discord.Color.orange())
+        embed = discord.Embed(
+            title="🎮 Pending Legion Directives",
+            description="\n".join(lines),
+            color=discord.Color.orange()
+        )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="force_turn", description="[GM] Immediately resolve the current turn.")
+    @app_commands.command(name="force_turn", description="[GM] Immediately trigger the Legion's next advance.")
     async def force_turn(self, interaction: discord.Interaction):
         if not await is_gm(interaction):
             await interaction.response.send_message("❌ Gamemaster only.", ephemeral=True)
@@ -217,20 +222,20 @@ class LegionCog(commands.Cog):
             )
         if not config or not config["game_started"]:
             await interaction.response.send_message(
-                "❌ The game hasn't started yet. Use `/game_start` first.", ephemeral=True)
+                "❌ The war hasn't begun yet. Use `/game_start` first.", ephemeral=True)
             return
 
         await interaction.response.send_message(
-            "⚡ Forcing turn resolution now...", ephemeral=True)
+            "⚡ Forcing Legion advance now...", ephemeral=True)
 
         try:
             async with pool.acquire() as conn:
                 await self.bot.turn_engine._resolve_turn(conn, interaction.guild_id)
         except Exception as e:
-            await interaction.followup.send(f"❌ Turn resolution failed: `{e}`", ephemeral=True)
+            await interaction.followup.send(f"❌ Advance resolution failed: `{e}`", ephemeral=True)
             return
 
-        await interaction.followup.send("✅ Turn resolved successfully.", ephemeral=True)
+        await interaction.followup.send("✅ Legion advance resolved successfully.", ephemeral=True)
 
 
 async def setup(bot):
