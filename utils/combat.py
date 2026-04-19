@@ -140,3 +140,26 @@ def resolve_combat(attacker: CombatUnit, defender: CombatUnit) -> CombatResult:
         outcome=outcome,
         narrative=narrative,
     )
+
+
+def legion_unit_for_hex(address: str) -> CombatUnit:
+    """
+    Generate a Legion CombatUnit with stats scaled to hex depth.
+    Used by legion_cog for GM-spawned units.
+    Deeper hexes (more '-' separators) produce stronger Legion units.
+    """
+    import random as _random
+    level   = address.count("-") + 1
+    base    = 8 + (level * 2)
+    v       = lambda: _random.randint(-2, 2)
+    return CombatUnit(
+        name=f"Legion [{address}]",
+        side="legion",
+        attack=base + v(),
+        defense=base + v(),
+        speed=base + v(),
+        morale=base + v(),
+        supply=base + v(),
+        recon=base + v(),
+        unit_type="",
+    )
