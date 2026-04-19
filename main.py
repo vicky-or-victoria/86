@@ -8,6 +8,10 @@ from discord.ext import commands
 from utils.db import init_schema, close_pool
 from utils.turn_engine import TurnEngine
 
+# The Discord user ID of the bot owner.
+# This person can use all Admin AND GM commands in any server, regardless of their roles.
+BOT_OWNER_ID: int = 0  # <-- Replace 0 with your Discord user ID
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -29,6 +33,7 @@ class EightySixBot(commands.Bot):
     def __init__(self):
         super().__init__(command_prefix="!", intents=intents)
         self.turn_engine = None
+        self.bot_owner_id: int = BOT_OWNER_ID
 
     async def setup_hook(self):
         await init_schema()
