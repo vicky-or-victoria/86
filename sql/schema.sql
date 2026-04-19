@@ -99,17 +99,16 @@ CREATE INDEX IF NOT EXISTS idx_squadrons_guild ON squadrons(guild_id);
 CREATE INDEX IF NOT EXISTS idx_legion_guild ON legion_units(guild_id);
 CREATE INDEX IF NOT EXISTS idx_combat_guild ON combat_log(guild_id);
 
--- Add new columns to existing tables if they don't exist (for existing deployments)
-DO $$ BEGIN
-    ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS gamemaster_role_id BIGINT DEFAULT NULL;
-    ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS report_channel_id BIGINT DEFAULT NULL;
-    ALTER TABLE hexes ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'neutral';
-    ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS owner_name TEXT NOT NULL DEFAULT 'Handler';
-    ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS deploy_hex TEXT DEFAULT NULL;
-    ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS home_outer TEXT NOT NULL DEFAULT 'A';
-    ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS in_transit BOOLEAN NOT NULL DEFAULT FALSE;
-    ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS transit_destination TEXT DEFAULT NULL;
-    ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS transit_step INT NOT NULL DEFAULT 0;
-    ALTER TABLE legion_units ADD COLUMN IF NOT EXISTS manually_moved BOOLEAN NOT NULL DEFAULT FALSE;
-EXCEPTION WHEN OTHERS THEN NULL;
-END $$;
+-- Add new columns to existing tables if they don't exist (for existing deployments).
+-- Each statement is wrapped in its own block so a genuine error surfaces rather
+-- than being swallowed by a catch-all EXCEPTION WHEN OTHERS THEN NULL.
+DO $$ BEGIN ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS gamemaster_role_id BIGINT DEFAULT NULL; END $$;
+DO $$ BEGIN ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS report_channel_id BIGINT DEFAULT NULL; END $$;
+DO $$ BEGIN ALTER TABLE hexes ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'neutral'; END $$;
+DO $$ BEGIN ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS owner_name TEXT NOT NULL DEFAULT 'Handler'; END $$;
+DO $$ BEGIN ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS deploy_hex TEXT DEFAULT NULL; END $$;
+DO $$ BEGIN ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS home_outer TEXT NOT NULL DEFAULT 'A'; END $$;
+DO $$ BEGIN ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS in_transit BOOLEAN NOT NULL DEFAULT FALSE; END $$;
+DO $$ BEGIN ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS transit_destination TEXT DEFAULT NULL; END $$;
+DO $$ BEGIN ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS transit_step INT NOT NULL DEFAULT 0; END $$;
+DO $$ BEGIN ALTER TABLE legion_units ADD COLUMN IF NOT EXISTS manually_moved BOOLEAN NOT NULL DEFAULT FALSE; END $$;
