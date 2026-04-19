@@ -8,7 +8,10 @@ Each turn:
   4. Resolve combat on contested hexes
   5. Recompute hex statuses bottom-up
   6. Clear GM move flags
-  7. Post summary
+  7. Purge inactive Legion units
+  8. Record turn
+  9. Post summary
+  10. Auto-update live map and registration embeds
 """
 
 import asyncio
@@ -119,6 +122,13 @@ class TurnEngine:
             await auto_update_map(self.bot, guild_id)
         except Exception as e:
             log.warning(f"auto_update_map failed for guild {guild_id}: {e}")
+
+        # Auto-update the registration embed player counter + endgame state
+        try:
+            from cogs.squadron_cog import update_registration_embed
+            await update_registration_embed(self.bot, guild_id)
+        except Exception as e:
+            log.warning(f"update_registration_embed failed for guild {guild_id}: {e}")
 
     # ── Player transit ────────────────────────────────────────────────────────
     async def _process_transit(self, conn, guild_id: int, summaries: list):
