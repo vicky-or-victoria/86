@@ -2,16 +2,17 @@
 Turn engine: auto-resolves every N hours per guild.
 
 Each turn:
-  1. Process player transit (move squadrons one step toward destination)
-  2. Apply queued GM Legion moves
-  3. AI moves unmoved Legion units (spawn + advance + attack)
-  4. Resolve combat on contested hexes
-  5. Recompute hex statuses bottom-up
-  6. Clear GM move flags
-  7. Purge inactive Legion units
-  8. Record turn
-  9. Post summary
-  10. Auto-update live map and registration embeds
+  1.  Process player transit (move squadrons one step toward destination)
+  2.  Apply queued GM Legion moves
+  3.  AI moves unmoved Legion units (spawn + advance + attack)
+  4.  Resolve combat on contested hexes
+  5.  Apply supply drain to all active squadrons outside Hub A
+  6.  Recompute hex statuses bottom-up
+  7.  Clear GM move flags
+  8.  Purge inactive Legion units
+  9.  Record turn
+  10. Post summary
+  11. Auto-update live map and registration embeds
 """
 
 import asyncio
@@ -22,20 +23,187 @@ from datetime import datetime, timezone
 import discord
 
 from utils.db import get_pool
-from utils.combat import resolve_combat, legion_unit_for_hex, CombatUnit
+from utils.combat import resolve_combat, CombatUnit
 from utils.hexmap import (
     OUTER_LABELS, SUB_POSITIONS, SAFE_HUB,
-    recompute_hex_statuses, sub_addresses, outer_of
+    recompute_hex_statuses, sub_addresses, outer_of, mid_of,
+    is_edge_inner, adjacent_inner_clusters, adjacent_mid_clusters,
+    adjacent_outer_hexes,
 )
-# Imported lazily inside _resolve_turn to avoid circular import at module load
-# (map_cog imports turn_engine indirectly via the bot; we only call it at runtime)
 
 log = logging.getLogger(__name__)
 
+# How much supply each squadron loses per turn when outside Hub A
+_SUPPLY_DRAIN_PER_TURN = 1
+_SUPPLY_MIN            = 0
+
+
+# ── Legion unit type helper ───────────────────────────────────────────────────
+
+def _random_unit_type() -> str:
+    return random.choice(["Grauwolf", "Löwe", "Dinosauria", "Juggernaut", "Shepherd"])
+
+
+def _legion_stats_for_hex(address: str) -> dict:
+    """Generate Legion unit stats with slight variance based on hex depth."""
+    level   = address.count("-") + 1
+    base    = 8 + (level * 2)
+    v       = lambda: random.randint(-2, 2)
+    return dict(
+        attack=base + v(), defense=base + v(), speed=base + v(),
+        morale=base + v(), supply=base + v(), recon=base + v(),
+    )
+
+
+# ── Pushback cascade ──────────────────────────────────────────────────────────
+
+async def _find_retreat_hex(conn, guild_id: int, lost_hex: str) -> str | None:
+    """
+    Walk the pushback cascade for a squadron that just lost at lost_hex.
+    Returns a level-3 hex address to retreat to, or None if truly nowhere
+    (caller should treat None as Final Defense trigger).
+
+    Cascade:
+      1. Another level-3 hex in the same level-2 cluster that is friendly/neutral.
+      2. An adjacent level-2 cluster (ring map) in the same outer hex that is
+         friendly/neutral/contested → random friendly/neutral level-3 inside it.
+      3. ALL level-2 clusters in the outer hex are legion → adjacent outer hex
+         (ring neighbours first, then any friendly/neutral/contested outer) →
+         random friendly/neutral level-3 inside it.
+      4. No valid outer hex remains → None (Final Defense).
+    """
+    current_mid   = mid_of(lost_hex)
+    current_outer = outer_of(lost_hex)
+
+    # ── Step 1: another level-3 in the same cluster ───────────────────────────
+    l3_rows = await conn.fetch(
+        "SELECT address, controller FROM hexes "
+        "WHERE guild_id=$1 AND parent_address=$2 AND address != $3",
+        guild_id, current_mid, lost_hex,
+    )
+    safe_l3 = [r["address"] for r in l3_rows if r["controller"] in ("players", "neutral")]
+    if safe_l3:
+        return random.choice(safe_l3)
+
+    # ── Step 2: adjacent level-2 clusters in the same outer hex ───────────────
+    adj_mids = adjacent_mid_clusters(current_mid)
+    for mid_addr in adj_mids:
+        mid_row = await conn.fetchrow(
+            "SELECT controller FROM hexes WHERE guild_id=$1 AND address=$2",
+            guild_id, mid_addr,
+        )
+        if mid_row and mid_row["controller"] == "legion":
+            continue
+        # Find friendly/neutral level-3s inside this cluster
+        l3_inside = await conn.fetch(
+            "SELECT address, controller FROM hexes "
+            "WHERE guild_id=$1 AND parent_address=$2",
+            guild_id, mid_addr,
+        )
+        candidates = [r["address"] for r in l3_inside if r["controller"] in ("players", "neutral")]
+        if candidates:
+            return random.choice(candidates)
+
+    # ── Step 3: all level-2 clusters in the outer hex are legion-controlled ───
+    # Check whether every mid in this outer is legion
+    all_mids = await conn.fetch(
+        "SELECT address, controller FROM hexes "
+        "WHERE guild_id=$1 AND level=2 AND split_part(address,'-',1)=$2",
+        guild_id, current_outer,
+    )
+    all_legion_outer = all(r["controller"] == "legion" for r in all_mids) if all_mids else True
+
+    if all_legion_outer:
+        # Try geometrically adjacent outer hexes first, then any remaining
+        adj_outers = adjacent_outer_hexes(current_outer)
+        other_outers = [o for o in OUTER_LABELS if o not in adj_outers and o != current_outer]
+        ordered_outers = adj_outers + other_outers
+
+        for outer_addr in ordered_outers:
+            outer_row = await conn.fetchrow(
+                "SELECT controller FROM hexes WHERE guild_id=$1 AND address=$2",
+                guild_id, outer_addr,
+            )
+            if not outer_row or outer_row["controller"] == "legion":
+                continue
+            # Pick a random friendly/neutral level-3 inside this outer
+            l3_rows2 = await conn.fetch(
+                "SELECT address, controller FROM hexes "
+                "WHERE guild_id=$1 AND level=3 AND split_part(address,'-',1)=$2",
+                guild_id, outer_addr,
+            )
+            candidates = [r["address"] for r in l3_rows2 if r["controller"] in ("players", "neutral")]
+            if candidates:
+                return random.choice(candidates)
+
+        # Nothing found → Final Defense
+        return None
+
+    # The outer hex still has non-legion clusters but none adjacent were usable —
+    # fall back to any non-legion level-3 in the same outer hex
+    all_l3 = await conn.fetch(
+        "SELECT address, controller FROM hexes "
+        "WHERE guild_id=$1 AND level=3 AND split_part(address,'-',1)=$2",
+        guild_id, current_outer,
+    )
+    candidates = [r["address"] for r in all_l3 if r["controller"] in ("players", "neutral")]
+    if candidates:
+        return random.choice(candidates)
+
+    return None  # truly nowhere → Final Defense
+
+
+async def _trigger_final_defense(conn, guild_id: int, summaries: list):
+    """
+    All outer hexes B–G are legion-controlled.
+    - Allow Legion to enter Hex A (gradually, via normal AI movement next turns).
+    - Scatter every surviving player squadron to a random level-3 hex inside Hex A.
+    """
+    log.warning(f"FINAL DEFENSE triggered for guild {guild_id}")
+
+    # Fetch all level-3 hexes inside Hex A
+    hub_l3 = await conn.fetch(
+        "SELECT address FROM hexes WHERE guild_id=$1 AND level=3 AND split_part(address,'-',1)=$2",
+        guild_id, SAFE_HUB,
+    )
+    hub_addresses = [r["address"] for r in hub_l3]
+    if not hub_addresses:
+        # Fallback: generate them manually
+        hub_addresses = [f"{SAFE_HUB}-{m}-{i}" for m in SUB_POSITIONS for i in SUB_POSITIONS]
+
+    # Scatter each active squadron individually to a random Hex A level-3
+    active_squadrons = await conn.fetch(
+        "SELECT id, name, owner_name FROM squadrons "
+        "WHERE guild_id=$1 AND is_active=TRUE",
+        guild_id,
+    )
+    for sq in active_squadrons:
+        dest = random.choice(hub_addresses)
+        await conn.execute(
+            "UPDATE squadrons SET hex_address=$1, home_outer=$2, "
+            "in_transit=FALSE, transit_destination=NULL, transit_step=0 WHERE id=$3",
+            dest, SAFE_HUB, sq["id"],
+        )
+        summaries.append(f"🏰 **{sq['owner_name']}'s {sq['name']}** pulled back to `{dest}`.")
+
+    # Remove the SAFE_HUB protection — Legion AI will no longer skip it
+    # We signal this by setting a guild_config flag. Add the column if it doesn't exist yet.
+    await conn.execute(
+        "UPDATE guild_config SET citadel_besieged=TRUE WHERE guild_id=$1", guild_id
+    )
+
+    summaries.insert(
+        0,
+        "☠️ **THE FINAL DEFENSE IN THE CITADEL** — The Legion has breached every outer hex. "
+        "All squadrons have fallen back to Hub A. The Citadel must hold.",
+    )
+
+
+# ── Turn engine ───────────────────────────────────────────────────────────────
 
 class TurnEngine:
     def __init__(self, bot):
-        self.bot = bot
+        self.bot  = bot
         self._task = None
 
     def start(self):
@@ -57,7 +225,8 @@ class TurnEngine:
         pool = await get_pool()
         async with pool.acquire() as conn:
             guilds = await conn.fetch(
-                "SELECT guild_id, turn_interval_hours, last_turn_at, game_started FROM guild_config"
+                "SELECT guild_id, turn_interval_hours, last_turn_at, game_started "
+                "FROM guild_config"
             )
             now = datetime.now(timezone.utc)
             for g in guilds:
@@ -73,13 +242,13 @@ class TurnEngine:
             "SELECT COUNT(*) as cnt FROM turn_history WHERE guild_id=$1", guild_id
         )
         turn_number = (turn_row["cnt"] or 0) + 1
-        summaries = []
+        summaries   = []
 
         async with conn.transaction():
             # 1. Process player transit
             await self._process_transit(conn, guild_id, summaries)
 
-            # 2. Apply queued GM legion moves
+            # 2. Apply queued GM Legion moves
             await self._apply_gm_moves(conn, guild_id, summaries)
 
             # 3. AI moves unmoved Legion units
@@ -88,10 +257,13 @@ class TurnEngine:
             # 4. Resolve combat
             await self._resolve_combat(conn, guild_id, turn_number, summaries)
 
-            # 5. Recompute hex statuses
+            # 5. Supply drain
+            await self._apply_supply_drain(conn, guild_id, summaries)
+
+            # 6. Recompute hex statuses
             await recompute_hex_statuses(conn, guild_id)
 
-            # 6. Clear GM move flags
+            # 7. Clear GM move flags
             await conn.execute(
                 "UPDATE legion_units SET manually_moved=FALSE WHERE guild_id=$1", guild_id
             )
@@ -99,7 +271,7 @@ class TurnEngine:
                 "DELETE FROM legion_gm_moves WHERE guild_id=$1", guild_id
             )
 
-            # 7. Purge inactive Legion units to prevent table bloat
+            # 8. Purge inactive Legion units
             deleted = await conn.execute(
                 "DELETE FROM legion_units WHERE guild_id=$1 AND is_active=FALSE", guild_id
             )
@@ -108,7 +280,7 @@ class TurnEngine:
             # 9. Record turn
             await conn.execute(
                 "INSERT INTO turn_history (guild_id, turn_number) VALUES ($1,$2)",
-                guild_id, turn_number
+                guild_id, turn_number,
             )
             await conn.execute(
                 "UPDATE guild_config SET last_turn_at=NOW() WHERE guild_id=$1", guild_id
@@ -116,14 +288,14 @@ class TurnEngine:
 
         await self._post_summary(guild_id, turn_number, summaries)
 
-        # Auto-update the live map embed (if one has been posted this session)
+        # Auto-update the live map embed
         try:
             from cogs.map_cog import auto_update_map
             await auto_update_map(self.bot, guild_id)
         except Exception as e:
             log.warning(f"auto_update_map failed for guild {guild_id}: {e}")
 
-        # Auto-update the registration embed player counter + endgame state
+        # Auto-update the registration embed
         try:
             from cogs.squadron_cog import update_registration_embed
             await update_registration_embed(self.bot, guild_id)
@@ -136,32 +308,28 @@ class TurnEngine:
         in_transit = await conn.fetch(
             "SELECT id, name, owner_name, hex_address, transit_destination, transit_step "
             "FROM squadrons WHERE guild_id=$1 AND in_transit=TRUE AND is_active=TRUE",
-            guild_id
+            guild_id,
         )
         for sq in in_transit:
             step = sq["transit_step"]
             dest = sq["transit_destination"]
             if step == 1:
-                # Step 1: move to Hub A — land at the facing corner of A
                 current_outer = outer_of(sq["hex_address"])
-                hub_entry = entry_hex_for_outer(SAFE_HUB, current_outer)
+                hub_entry     = entry_hex_for_outer(SAFE_HUB, current_outer)
                 await conn.execute(
-                    "UPDATE squadrons SET hex_address=$1, transit_step=2, home_outer=$2 "
-                    "WHERE id=$3",
-                    hub_entry, SAFE_HUB, sq["id"]
+                    "UPDATE squadrons SET hex_address=$1, transit_step=2, home_outer=$2 WHERE id=$3",
+                    hub_entry, SAFE_HUB, sq["id"],
                 )
                 summaries.append(
                     f"🚶 **{sq['owner_name']}'s {sq['name']}** arrived at Hub A "
                     f"(`{hub_entry}`, en route to Hex {dest})."
                 )
             elif step == 2:
-                # Step 2: move to the final destination (already a level-3 address)
                 dest_outer = outer_of(dest)
                 await conn.execute(
                     "UPDATE squadrons SET hex_address=$1, home_outer=$2, "
-                    "in_transit=FALSE, transit_destination=NULL, transit_step=0 "
-                    "WHERE id=$3",
-                    dest, dest_outer, sq["id"]
+                    "in_transit=FALSE, transit_destination=NULL, transit_step=0 WHERE id=$3",
+                    dest, dest_outer, sq["id"],
                 )
                 summaries.append(
                     f"✅ **{sq['owner_name']}'s {sq['name']}** deployed to `{dest}`."
@@ -174,96 +342,94 @@ class TurnEngine:
             "FROM legion_gm_moves gm "
             "JOIN legion_units lu ON lu.id = gm.legion_unit_id "
             "WHERE gm.guild_id=$1",
-            guild_id
+            guild_id,
         )
         for move in moves:
             await conn.execute(
                 "UPDATE legion_units SET hex_address=$1, manually_moved=TRUE WHERE id=$2",
-                move["target_address"], move["legion_unit_id"]
+                move["target_address"], move["legion_unit_id"],
             )
-            summaries.append(f"🎮 **Legion {move['unit_type']}** moved to **{move['target_address']}** (GM order).")
+            summaries.append(
+                f"🎮 **Legion {move['unit_type']}** moved to **{move['target_address']}** (GM order)."
+            )
 
     # ── Legion AI ─────────────────────────────────────────────────────────────
     async def _legion_ai(self, conn, guild_id: int, summaries: list):
         """
-        Legion units live exclusively at level 3.
-        - Spawn: pick a random level-3 hex inside a neutral outer hex (not A).
-        - Advance: move to an adjacent level-3 hex within the same outer hex,
-          preferring neutral > player-controlled. Can cross cluster boundaries
-          if at an edge inner position.
-        Legion never enters any hex inside Hex A.
+        Legion units live at level 3.
+        - Spawn: random level-3 hex inside a neutral outer hex (not A, unless besieged).
+        - Advance: prefer neutral > player > legion hexes.
         """
-        from utils.hexmap import (
-            SAFE_HUB, outer_of, mid_of, inner_pos,
-            is_edge_inner, adjacent_inner_clusters, sub_addresses, SUB_POSITIONS
+        # Check if citadel is besieged (Final Defense active)
+        cfg = await conn.fetchrow(
+            "SELECT citadel_besieged FROM guild_config WHERE guild_id=$1", guild_id
         )
+        citadel_besieged = cfg["citadel_besieged"] if cfg and "citadel_besieged" in cfg.keys() else False
 
-        # ── Spawn on neutral outer hexes (B–G only) ──────────────────────────
+        # ── Spawn ─────────────────────────────────────────────────────────────
         neutral_outer = await conn.fetch(
             "SELECT address FROM hexes "
             "WHERE guild_id=$1 AND level=1 AND controller='neutral' AND address != $2",
-            guild_id, SAFE_HUB
+            guild_id, SAFE_HUB,
         )
         spawn_candidates = [r["address"] for r in neutral_outer]
         random.shuffle(spawn_candidates)
         for outer_addr in spawn_candidates[:2]:
-            # Pick a random level-3 hex inside this outer hex
-            mid_pos_choice = random.choice(SUB_POSITIONS)
-            inner_pos_choice = random.choice(SUB_POSITIONS)
-            spawn_addr = f"{outer_addr}-{mid_pos_choice}-{inner_pos_choice}"
-            unit = legion_unit_for_hex(spawn_addr)
+            mid_choice   = random.choice(SUB_POSITIONS)
+            inner_choice = random.choice(SUB_POSITIONS)
+            spawn_addr   = f"{outer_addr}-{mid_choice}-{inner_choice}"
+            stats        = _legion_stats_for_hex(spawn_addr)
+            unit_type    = _random_unit_type()
             await conn.execute(
                 """INSERT INTO legion_units
-                   (guild_id, unit_type, hex_address, attack, defense, speed, morale, supply, recon, manually_moved)
+                   (guild_id, unit_type, hex_address,
+                    attack, defense, speed, morale, supply, recon, manually_moved)
                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,TRUE)""",
-                guild_id, _random_unit_type(), spawn_addr,
-                unit.attack, unit.defense, unit.speed,
-                unit.morale, unit.supply, unit.recon
+                guild_id, unit_type, spawn_addr,
+                stats["attack"], stats["defense"], stats["speed"],
+                stats["morale"], stats["supply"], stats["recon"],
             )
-            summaries.append(f"🔴 **Legion** spawned at `{spawn_addr}`.")
+            summaries.append(f"🔴 **Legion {unit_type}** spawned at `{spawn_addr}`.")
 
         # ── Move existing unmoved units ───────────────────────────────────────
         units = await conn.fetch(
             "SELECT id, hex_address, unit_type FROM legion_units "
             "WHERE guild_id=$1 AND is_active=TRUE AND manually_moved=FALSE",
-            guild_id
+            guild_id,
         )
         for unit in units:
-            addr = unit["hex_address"]
-            if outer_of(addr) == SAFE_HUB:
-                continue  # never enter Hex A
+            addr       = unit["hex_address"]
+            unit_outer = outer_of(addr)
+
+            # Skip Hub A unless citadel is besieged
+            if unit_outer == SAFE_HUB and not citadel_besieged:
+                continue
 
             current_mid = mid_of(addr)
 
-            # Build candidate level-3 hexes to move into:
-            # 1. Other positions within same cluster
+            # Build candidates: same cluster + adjacent clusters
             candidates = []
             for pos in SUB_POSITIONS:
                 candidate = f"{current_mid}-{pos}"
                 if candidate != addr:
                     candidates.append(candidate)
 
-            # 2. If at an edge inner hex, also consider adjacent clusters
             if is_edge_inner(addr):
-                adj_mids = adjacent_inner_clusters(addr)
-                for adj_mid in adj_mids:
-                    if outer_of(adj_mid) == SAFE_HUB:
+                for adj_mid in adjacent_inner_clusters(addr):
+                    if outer_of(adj_mid) == SAFE_HUB and not citadel_besieged:
                         continue
-                    # Enter at the center of the adjacent cluster
                     candidates.append(f"{adj_mid}-C")
 
             if not candidates:
                 continue
 
-            # Fetch controllers for all candidates
             ctrl_rows = await conn.fetch(
                 "SELECT address, controller FROM hexes "
                 "WHERE guild_id=$1 AND address = ANY($2::text[])",
-                guild_id, candidates
+                guild_id, candidates,
             )
             ctrl_map = {r["address"]: r["controller"] for r in ctrl_rows}
 
-            # Prefer neutral, then player (attack), skip legion-only hexes unless no choice
             neutrals = [c for c in candidates if ctrl_map.get(c) == "neutral"]
             players  = [c for c in candidates if ctrl_map.get(c) == "players"]
             others   = [c for c in candidates if ctrl_map.get(c) not in ("neutral", "players")]
@@ -277,7 +443,7 @@ class TurnEngine:
 
             await conn.execute(
                 "UPDATE legion_units SET hex_address=$1 WHERE id=$2",
-                target, unit["id"]
+                target, unit["id"],
             )
 
     # ── Combat resolution ─────────────────────────────────────────────────────
@@ -285,34 +451,34 @@ class TurnEngine:
         player_rows = await conn.fetch(
             "SELECT hex_address, owner_name, name, attack, defense, speed, morale, supply, recon "
             "FROM squadrons WHERE guild_id=$1 AND is_active=TRUE AND in_transit=FALSE",
-            guild_id
+            guild_id,
         )
         legion_rows = await conn.fetch(
             "SELECT id, hex_address, unit_type, attack, defense, speed, morale, supply, recon "
             "FROM legion_units WHERE guild_id=$1 AND is_active=TRUE",
-            guild_id
+            guild_id,
         )
 
         player_by_hex: dict[str, list] = {}
         for p in player_rows:
-            # Skip if in safe hub (Hex A) — no combat there
-            if p["hex_address"] == SAFE_HUB:
-                continue
             player_by_hex.setdefault(p["hex_address"], []).append(p)
 
         legion_by_hex: dict[str, list] = {}
         for l in legion_rows:
-            if l["hex_address"] == SAFE_HUB:
-                continue
             legion_by_hex.setdefault(l["hex_address"], []).append(l)
 
         contested = set(player_by_hex.keys()) & set(legion_by_hex.keys())
+
+        # Track whether Final Defense needs to fire after all combats resolve
+        final_defense_needed = False
 
         for hex_addr in contested:
             p_units = player_by_hex[hex_addr]
             l_units = legion_by_hex[hex_addr]
 
-            avg = lambda stat: sum(u[stat] for u in p_units) // len(p_units)
+            def avg(stat):
+                return sum(u[stat] for u in p_units) // len(p_units)
+
             player_unit = CombatUnit(
                 name=f"Allied Squadrons ({', '.join(u['name'] for u in p_units)})",
                 side="players",
@@ -320,20 +486,19 @@ class TurnEngine:
                 morale=avg("morale"), supply=avg("supply"), recon=avg("recon"),
             )
 
-            # Fight each Legion unit in the hex sequentially.
-            # Each fight that isn't a clean win drains the player unit's
-            # effective attack and morale (battle fatigue), making
-            # multi-Legion hexes progressively harder to clear.
             fatigue_stacks = 0
+            final_ctrl     = "neutral"
+            player_routed  = False
+
             for l in l_units:
                 legion_unit = CombatUnit(
                     name=f"Legion {l['unit_type']}",
                     side="legion",
                     attack=l["attack"], defense=l["defense"], speed=l["speed"],
                     morale=l["morale"], supply=l["supply"], recon=l["recon"],
+                    unit_type=l["unit_type"],
                 )
 
-                # Apply accumulated fatigue to a copy of the player unit
                 fatigued_player = CombatUnit(
                     name=player_unit.name,
                     side=player_unit.side,
@@ -347,22 +512,6 @@ class TurnEngine:
 
                 result = resolve_combat(fatigued_player, legion_unit)
 
-                if result.outcome == "attacker_wins":
-                    new_ctrl = "players"
-                    await conn.execute(
-                        "UPDATE legion_units SET is_active=FALSE WHERE id=$1", l["id"]
-                    )
-                elif result.outcome == "defender_wins":
-                    new_ctrl = "legion"
-                    fatigue_stacks += 1  # loss accumulates fatigue for remaining fights
-                else:
-                    new_ctrl = "neutral"  # draw — stays contested
-                    fatigue_stacks += 1  # draw also wears the unit down
-
-                await conn.execute(
-                    "UPDATE hexes SET controller=$1 WHERE guild_id=$2 AND address=$3",
-                    new_ctrl, guild_id, hex_addr
-                )
                 await conn.execute(
                     """INSERT INTO combat_log
                        (guild_id, turn_number, hex_address, attacker, defender,
@@ -370,9 +519,100 @@ class TurnEngine:
                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
                     guild_id, turn_number, hex_addr,
                     result.attacker, result.defender,
-                    result.attacker_roll, result.defender_roll, result.outcome
+                    result.attacker_roll, result.defender_roll, result.outcome,
                 )
                 summaries.append(f"⚔️ **Hex {hex_addr}**: {result.narrative}")
+
+                if result.outcome == "attacker_wins":
+                    final_ctrl = "players"
+                    await conn.execute(
+                        "UPDATE legion_units SET is_active=FALSE WHERE id=$1", l["id"]
+                    )
+
+                elif result.outcome == "defender_wins":
+                    final_ctrl     = "legion"
+                    player_routed  = True
+                    fatigue_stacks += 1
+                    break  # routed — stop fighting remaining Legion units on this hex
+
+                else:  # draw
+                    final_ctrl     = "neutral"
+                    fatigue_stacks += 1
+
+            # Write hex controller ONCE after all fights on this hex are done
+            await conn.execute(
+                "UPDATE hexes SET controller=$1 WHERE guild_id=$2 AND address=$3",
+                final_ctrl, guild_id, hex_addr,
+            )
+
+            # ── Pushback on player rout ───────────────────────────────────────
+            if player_routed:
+                retreat_hex = await _find_retreat_hex(conn, guild_id, hex_addr)
+
+                if retreat_hex is None:
+                    # No valid retreat exists — Final Defense
+                    final_defense_needed = True
+                else:
+                    # Move the whole group to the same retreat hex
+                    sq_ids = await conn.fetch(
+                        "SELECT id, name, owner_name FROM squadrons "
+                        "WHERE guild_id=$1 AND is_active=TRUE AND hex_address=$2",
+                        guild_id, hex_addr,
+                    )
+                    for sq in sq_ids:
+                        await conn.execute(
+                            "UPDATE squadrons SET hex_address=$1, home_outer=$2 WHERE id=$3",
+                            retreat_hex, outer_of(retreat_hex), sq["id"],
+                        )
+                    summaries.append(
+                        f"🔙 **Allied Squadrons** routed from `{hex_addr}` → fell back to `{retreat_hex}`."
+                    )
+
+        # ── Final Defense check ───────────────────────────────────────────────
+        if not final_defense_needed:
+            # Also check the persistent endgame condition (all B–G legion-controlled)
+            outer_rows = await conn.fetch(
+                "SELECT status FROM hexes WHERE guild_id=$1 AND level=1 AND address != $2",
+                guild_id, SAFE_HUB,
+            )
+            from utils.hexmap import STATUS_LEGION, STATUS_MAJ_LEGION
+            _legion_statuses = {STATUS_LEGION, STATUS_MAJ_LEGION}
+            if outer_rows and all(r["status"] in _legion_statuses for r in outer_rows):
+                final_defense_needed = True
+
+        if final_defense_needed:
+            # Only trigger if not already besieged
+            cfg = await conn.fetchrow(
+                "SELECT citadel_besieged FROM guild_config WHERE guild_id=$1", guild_id
+            )
+            already = cfg["citadel_besieged"] if cfg and "citadel_besieged" in cfg.keys() else False
+            if not already:
+                await _trigger_final_defense(conn, guild_id, summaries)
+
+    # ── Supply drain ──────────────────────────────────────────────────────────
+    async def _apply_supply_drain(self, conn, guild_id: int, summaries: list):
+        """
+        Drain 1 supply per turn from every active squadron that is outside Hub A.
+        Supply floors at 0. Squadrons at 0 supply are penalised in combat (-2 rolls).
+        Players must scavenge in the field to recover supply.
+        """
+        drained = await conn.fetch(
+            "SELECT id, name, owner_name, supply FROM squadrons "
+            "WHERE guild_id=$1 AND is_active=TRUE AND in_transit=FALSE "
+            "AND split_part(hex_address,'-',1) != $2",
+            guild_id, SAFE_HUB,
+        )
+        for sq in drained:
+            new_supply = max(_SUPPLY_MIN, sq["supply"] - _SUPPLY_DRAIN_PER_TURN)
+            await conn.execute(
+                "UPDATE squadrons SET supply=$1 WHERE id=$2",
+                new_supply, sq["id"],
+            )
+            if new_supply <= 4:
+                summaries.append(
+                    f"⚠️ **{sq['owner_name']}'s {sq['name']}** is running low on supply "
+                    f"(`{new_supply}` remaining) — combat penalty active. Scavenge to resupply."
+                )
 
     # ── Post summary ──────────────────────────────────────────────────────────
     async def _post_summary(self, guild_id: int, turn_number: int, summaries: list):
@@ -380,7 +620,6 @@ class TurnEngine:
         if not guild:
             return
 
-        # Use the configured report channel if set, otherwise fall back to first writable channel
         pool = await get_pool()
         async with pool.acquire() as conn:
             config = await conn.fetchrow(
@@ -408,7 +647,3 @@ class TurnEngine:
         )
         embed.set_footer(text="86 — Eighty Six | The Legion never stops.")
         await channel.send(embed=embed)
-
-
-def _random_unit_type() -> str:
-    return random.choice(["Grauwolf", "Löwe", "Dinosauria", "Juggernaut", "Shepherd"])
