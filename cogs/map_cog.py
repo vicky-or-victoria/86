@@ -77,14 +77,14 @@ async def send_hex_view(
         legion_units = []
         if hex_addrs:
             sq_rows = await conn.fetch(
-                "SELECT hex_address, owner_name, in_transit FROM squadrons "
+                "SELECT hex_address AS address, owner_name, in_transit FROM squadrons "
                 "WHERE guild_id=$1 AND is_active=TRUE AND hex_address = ANY($2::text[])",
                 guild_id, hex_addrs
             )
             squadrons = [dict(r) for r in sq_rows]
 
             lu_rows = await conn.fetch(
-                "SELECT hex_address FROM legion_units "
+                "SELECT hex_address AS address FROM legion_units "
                 "WHERE guild_id=$1 AND is_active=TRUE AND hex_address = ANY($2::text[])",
                 guild_id, hex_addrs
             )
