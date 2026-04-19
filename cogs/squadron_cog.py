@@ -358,6 +358,20 @@ async def _finalize_registration(interaction, guild_id, owner_id, owner_name, sq
     embed.set_footer(text="86 — Eighty Six | The Legion never stops.")
     await interaction.response.edit_message(embed=embed, view=None)
 
+    # Assign the handler role if configured
+    try:
+        pool2 = await get_pool()
+        async with pool2.acquire() as conn2:
+            cfg = await conn2.fetchrow(
+                "SELECT handler_role_id FROM guild_config WHERE guild_id=$1", guild_id
+            )
+        if cfg and cfg["handler_role_id"]:
+            role = interaction.guild.get_role(cfg["handler_role_id"])
+            if role:
+                await interaction.user.add_roles(role, reason="Handler registration")
+    except Exception:
+        pass
+
     # Update the live registration counter
     try:
         from cogs.squadron_cog import update_registration_embed
