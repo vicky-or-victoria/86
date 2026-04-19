@@ -391,6 +391,11 @@ class HQView(discord.ui.View):
     async def map_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await _hq_map(interaction)
 
+    @discord.ui.button(label="🎒 Scavenge", style=discord.ButtonStyle.secondary,
+                       custom_id="hq_scavenge", row=1)
+    async def scavenge_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await _hq_scavenge(interaction)
+
     @discord.ui.button(label="📖 How to Play", style=discord.ButtonStyle.gray,
                        custom_id="hq_help", row=1)
     async def help_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -494,6 +499,66 @@ async def _hq_map(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, file=map_file, view=view, ephemeral=True)
 
 
+async def _hq_scavenge(interaction: discord.Interaction):
+    """
+    Attempt to scavenge supply from the current hex.
+    Only usable outside Hub A. One attempt per turn would be ideal but
+    we keep it simple: a d6 roll with a small success window.
+      - Roll 4–6: gain 2 supply (capped at starting archetype max).
+      - Roll 1–3: nothing found.
+    Cannot push supply above the squadron's original archetype cap (tracked as deploy_hex
+    being set — we use 20 as a hard cap to keep it simple).
+    """
+    SCAVENGE_CAP   = 20
+    SCAVENGE_GAIN  = 2
+    await ensure_guild(interaction.guild_id)
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        sq = await conn.fetchrow(
+            "SELECT id, name, hex_address, supply FROM squadrons "
+            "WHERE guild_id=$1 AND owner_id=$2 AND is_active=TRUE LIMIT 1",
+            interaction.guild_id, interaction.user.id,
+        )
+        if not sq:
+            await interaction.response.send_message(
+                "❌ You have no active squadron.", ephemeral=True)
+            return
+
+        from utils.hexmap import outer_of, SAFE_HUB
+        if outer_of(sq["hex_address"]) == SAFE_HUB:
+            await interaction.response.send_message(
+                "❌ Nothing to scavenge in Hub A. Deploy to the front lines first.",
+                ephemeral=True)
+            return
+
+        roll = random.randint(1, 6)
+        if roll >= 4:
+            new_supply = min(SCAVENGE_CAP, sq["supply"] + SCAVENGE_GAIN)
+            gained     = new_supply - sq["supply"]
+            await conn.execute(
+                "UPDATE squadrons SET supply=$1 WHERE id=$2", new_supply, sq["id"]
+            )
+            embed = discord.Embed(
+                title="🎒 Scavenge — Success",
+                description=(
+                    f"**{sq['name']}** found usable resources at `{sq['hex_address']}`.\n"
+                    f"> Supply: `{sq['supply']}` → `{new_supply}` (+{gained})"
+                ),
+                color=discord.Color.green(),
+            )
+        else:
+            embed = discord.Embed(
+                title="🎒 Scavenge — Nothing Found",
+                description=(
+                    f"**{sq['name']}** searched `{sq['hex_address']}` but found nothing useful.\n"
+                    f"> Supply remains at `{sq['supply']}`."
+                ),
+                color=discord.Color.dark_gray(),
+            )
+    embed.set_footer(text="86 — Eighty Six | The field provides, or it doesn't.")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
 async def _hq_help(interaction: discord.Interaction):
     embed = discord.Embed(
         title="📖 Handler Field Manual",
@@ -526,7 +591,16 @@ async def _hq_help(interaction: discord.Interaction):
             "## Stats\n"
             "> `ATK` — Damage output | `DEF` — Damage mitigation\n"
             "> `SPD` — Initiative (who strikes first) | `MOR` — Reroll chance on bad dice\n"
-            "> `SUP` — Supply (below 5 = -2 to all rolls) | `RCN` — Reveals enemy tier"
+            "> `SUP` — Supply; drains 1 per turn outside Hub A. Below 5 = -2 to all rolls. "
+            "Scavenge in the field to recover.\n"
+            "> `RCN` — Recon; two effects: (1) if your RCN exceeds the Legion unit's, "
+            "you gain +1 ATK from intel. (2) Shepherd and Dinosauria gain +3 DEF against "
+            "squadrons with RCN below 8 — high Recon squads negate this entirely.\n\n"
+            "## Defeat & Pushback\n"
+            "> If your squadron loses a hex, it falls back to the nearest friendly or neutral "
+            "hex. If the whole cluster is overrun it escalates to an adjacent cluster, then "
+            "outer hex. If all outer hexes B–G fall, **The Final Defense in the Citadel** "
+            "is declared and all squadrons scatter inside Hub A for a last stand."
         ),
     )
     embed.set_footer(text="86 — Eighty Six | Use 📋 My Status to check your position.")
