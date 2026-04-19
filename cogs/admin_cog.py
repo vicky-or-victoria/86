@@ -24,11 +24,19 @@ class AdminCog(commands.Cog):
         pool = await get_pool()
         async with pool.acquire() as conn:
             await ensure_hexes(interaction.guild_id, conn)
-            # Ensure Hex A is always player-controlled at start
+            # Ensure Hex A and all its children are player-controlled at start.
+            # Uses parent_address lookup instead of LIKE to be address-format safe.
+            hub_sub_addresses = [f"{SAFE_HUB}-{p}" for p in ["C","1","2","3","4","5","6"]]
+            hub_inner_addresses = [
+                f"{SAFE_HUB}-{p}-{q}"
+                for p in ["C","1","2","3","4","5","6"]
+                for q in ["C","1","2","3","4","5","6"]
+            ]
+            all_hub_addresses = [SAFE_HUB] + hub_sub_addresses + hub_inner_addresses
             await conn.execute(
                 "UPDATE hexes SET controller='players', status=$1 "
-                "WHERE guild_id=$2 AND (address=$3 OR parent_address=$3 OR address LIKE $4)",
-                STATUS_PLAYER, interaction.guild_id, SAFE_HUB, f"{SAFE_HUB}-%"
+                "WHERE guild_id=$2 AND address = ANY($3::text[])",
+                STATUS_PLAYER, interaction.guild_id, all_hub_addresses
             )
             await conn.execute(
                 "UPDATE guild_config SET game_started=TRUE WHERE guild_id=$1",
@@ -78,11 +86,18 @@ class AdminCog(commands.Cog):
                 "UPDATE hexes SET controller='neutral', status='neutral' WHERE guild_id=$1",
                 interaction.guild_id
             )
-            # Restore Hex A
+            # Restore Hex A and all its children
+            hub_sub_addresses = [f"{SAFE_HUB}-{p}" for p in ["C","1","2","3","4","5","6"]]
+            hub_inner_addresses = [
+                f"{SAFE_HUB}-{p}-{q}"
+                for p in ["C","1","2","3","4","5","6"]
+                for q in ["C","1","2","3","4","5","6"]
+            ]
+            all_hub_addresses = [SAFE_HUB] + hub_sub_addresses + hub_inner_addresses
             await conn.execute(
                 "UPDATE hexes SET controller='players', status=$1 "
-                "WHERE guild_id=$2 AND (address=$3 OR address LIKE $4)",
-                STATUS_PLAYER, interaction.guild_id, SAFE_HUB, f"{SAFE_HUB}-%"
+                "WHERE guild_id=$2 AND address = ANY($3::text[])",
+                STATUS_PLAYER, interaction.guild_id, all_hub_addresses
             )
             await conn.execute(
                 "UPDATE guild_config SET game_started=FALSE, last_turn_at=NOW() WHERE guild_id=$1",
@@ -145,6 +160,24 @@ class AdminCog(commands.Cog):
         )
         embed.set_footer(text=f"Last turn: {config['last_turn_at'].strftime('%Y-%m-%d %H:%M UTC')}")
         await interaction.response.send_message(embed=embed)
+
+
+    @app_commands.command(name="set_report_channel", description="[Admin] Set the channel where turn reports are posted.")
+    @app_commands.describe(channel="The text channel to post After Action Reports in")
+    async def set_report_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        if not self._is_admin(interaction):
+            await interaction.response.send_message("❌ Admins only.", ephemeral=True)
+            return
+        await ensure_guild(interaction.guild_id)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE guild_config SET report_channel_id=$1 WHERE guild_id=$2",
+                channel.id, interaction.guild_id,
+            )
+        await interaction.response.send_message(
+            f"✅ Turn reports will be posted in {channel.mention}.", ephemeral=True
+        )
 
 
 async def setup(bot):
