@@ -8,9 +8,8 @@ from discord.ext import commands
 from utils.db import init_schema, close_pool
 from utils.turn_engine import TurnEngine
 
-# The Discord user ID of the bot owner.
-# This person can use all Admin AND GM commands in any server, regardless of their roles.
-BOT_OWNER_ID: int = 0  # <-- Replace 0 with your Discord user ID
+
+BOT_OWNER_ID: int = 795733380532404224
 
 logging.basicConfig(
     level=logging.INFO,
