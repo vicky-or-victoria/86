@@ -94,7 +94,13 @@ class TurnEngine:
                 "DELETE FROM legion_gm_moves WHERE guild_id=$1", guild_id
             )
 
-            # 7. Record turn
+            # 7. Purge inactive Legion units to prevent table bloat
+            deleted = await conn.execute(
+                "DELETE FROM legion_units WHERE guild_id=$1 AND is_active=FALSE", guild_id
+            )
+            log.debug(f"Purged inactive Legion units for guild {guild_id}: {deleted}")
+
+            # 9. Record turn
             await conn.execute(
                 "INSERT INTO turn_history (guild_id, turn_number) VALUES ($1,$2)",
                 guild_id, turn_number
@@ -295,7 +301,11 @@ class TurnEngine:
                 morale=avg("morale"), supply=avg("supply"), recon=avg("recon"),
             )
 
-            # Fight each Legion unit in the hex sequentially
+            # Fight each Legion unit in the hex sequentially.
+            # Each fight that isn't a clean win drains the player unit's
+            # effective attack and morale (battle fatigue), making
+            # multi-Legion hexes progressively harder to clear.
+            fatigue_stacks = 0
             for l in l_units:
                 legion_unit = CombatUnit(
                     name=f"Legion {l['unit_type']}",
@@ -304,7 +314,19 @@ class TurnEngine:
                     morale=l["morale"], supply=l["supply"], recon=l["recon"],
                 )
 
-                result = resolve_combat(player_unit, legion_unit)
+                # Apply accumulated fatigue to a copy of the player unit
+                fatigued_player = CombatUnit(
+                    name=player_unit.name,
+                    side=player_unit.side,
+                    attack=max(1, player_unit.attack - fatigue_stacks * 2),
+                    defense=player_unit.defense,
+                    speed=player_unit.speed,
+                    morale=max(1, player_unit.morale - fatigue_stacks),
+                    supply=player_unit.supply,
+                    recon=player_unit.recon,
+                )
+
+                result = resolve_combat(fatigued_player, legion_unit)
 
                 if result.outcome == "attacker_wins":
                     new_ctrl = "players"
@@ -313,8 +335,10 @@ class TurnEngine:
                     )
                 elif result.outcome == "defender_wins":
                     new_ctrl = "legion"
+                    fatigue_stacks += 1  # loss accumulates fatigue for remaining fights
                 else:
                     new_ctrl = "neutral"  # draw — stays contested
+                    fatigue_stacks += 1  # draw also wears the unit down
 
                 await conn.execute(
                     "UPDATE hexes SET controller=$1 WHERE guild_id=$2 AND address=$3",
