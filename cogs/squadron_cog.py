@@ -15,27 +15,16 @@ from utils.hexmap import (
 # ── Starter squadron definitions ──────────────────────────────────────────────
 #
 # Three archetypes, each totalling 60 stat points.
-# They counter different Legion unit strengths:
-#
-#   VANGUARD  – Heavy assault. High Attack + Speed. Cracks Löwe/Juggernaut (high Defense).
-#               Weakness: low Supply + Recon — starves fast; blind to Shepherd ambushes.
-#
-#   RECON     – Scout specialist. High Recon + Speed. Disrupts Shepherd command networks
-#               and outruns Grauwolf wolf-packs.
-#               Weakness: fragile in direct combat; avoid Dinosauria swarms.
-#
-#   FORTRESS  – Defensive anchor. Very high Defense + Supply + Morale. Absorbs Dinosauria
-#               swarm attacks and outlasts sustained Legion offensives.
-#               Weakness: very low Speed — loses initiative to fast Legion types.
+# They counter different Legion unit strengths.
 
 STARTER_SQUADRONS = {
     "vanguard": {
         "label": "⚔️  Vanguard",
         "short": "Vanguard",
         "description": (
-            "**⚔️ Vanguard** — *Assault Specialists*\n"
-            "Built for aggressive pushes. Excels at cracking armoured Legion like "
-            "**Löwe** and **Juggernaut**.\n"
+            "**⚔️ Vanguard** — *Assault Numbers*\n"
+            "Built for aggressive pushes through Legion-controlled territory. "
+            "Excels at cracking armoured Legion like **Löwe** and **Juggernaut**.\n"
             "> **Strengths:** High ATK & SPD — hits hard and strikes first.\n"
             "> **Weaknesses:** Low SUP & RCN — starves fast; blind to Shepherd ambushes.\n"
             "> `ATK 16 | DEF 10 | SPD 14 | MOR 10 | SUP 5 | RCN 5`"
@@ -47,9 +36,9 @@ STARTER_SQUADRONS = {
         "label": "🔭  Recon",
         "short": "Recon",
         "description": (
-            "**🔭 Recon** — *Scout Specialists*\n"
-            "Fast and elusive. Disrupts **Shepherd** command networks and outruns "
-            "**Grauwolf** wolf-packs.\n"
+            "**🔭 Recon** — *Scout Numbers*\n"
+            "Fast and elusive across the front lines. Disrupts **Shepherd** "
+            "command networks and outruns **Grauwolf** wolf-packs.\n"
             "> **Strengths:** Very high RCN & SPD — reveals enemy stats; superior initiative.\n"
             "> **Weaknesses:** Low ATK & DEF — avoid Juggernaut and Dinosauria swarms.\n"
             "> `ATK 6 | DEF 6 | SPD 16 | MOR 10 | SUP 12 | RCN 10`"
@@ -61,9 +50,9 @@ STARTER_SQUADRONS = {
         "label": "🛡️  Fortress",
         "short": "Fortress",
         "description": (
-            "**🛡️ Fortress** — *Defensive Anchors*\n"
-            "Digs in and holds the line. Built to absorb **Dinosauria** swarm attacks "
-            "and outlast sustained offensives.\n"
+            "**🛡️ Fortress** — *Defensive Numbers*\n"
+            "Digs in and holds the border line. Built to absorb **Dinosauria** "
+            "swarm attacks and outlast sustained Legion offensives.\n"
             "> **Strengths:** Very high DEF, SUP & MOR — survives long fights; morale rerolls.\n"
             "> **Weaknesses:** Very low SPD — slow to redeploy; loses initiative to Grauwolf.\n"
             "> `ATK 8 | DEF 18 | SPD 4 | MOR 14 | SUP 14 | RCN 2`"
@@ -82,7 +71,7 @@ _registration_messages: dict[int, dict] = {}
 
 
 async def update_registration_embed(bot, guild_id: int):
-    """Edit the live registration embed to show the current player count."""
+    """Edit the live registration embed to show the current Handler count."""
     if guild_id not in _registration_messages:
         return
     info = _registration_messages[guild_id]
@@ -104,7 +93,6 @@ async def update_registration_embed(bot, guild_id: int):
             "SELECT COUNT(DISTINCT owner_id) FROM squadrons WHERE guild_id=$1 AND is_active=TRUE",
             guild_id,
         )
-        # Check endgame state: all outer hexes B–G legion controlled
         outer_rows = await conn.fetch(
             "SELECT status FROM hexes WHERE guild_id=$1 AND level=1 AND address != $2",
             guild_id, SAFE_HUB,
@@ -118,40 +106,43 @@ async def update_registration_embed(bot, guild_id: int):
 def _build_registration_embed(player_count: int, endgame: bool) -> discord.Embed:
     if endgame:
         embed = discord.Embed(
-            title="☠️ The Front Has Fallen",
+            title="☠️ The Citadel Has Fallen",
             description=(
-                "**All outer hexes have been taken by the Legion.**\n\n"
-                "Registration is closed. The war is over.\n"
-                "A full game reset is required before new Handlers can enlist.\n\n"
+                "**The Legion controls all border sectors. Risk Universalis has been overrun.**\n\n"
+                "Handler enlistment is closed. The war is lost.\n"
+                "A full command reset is required before new Handlers can be assigned.\n\n"
                 f"**Handlers who fought:** `{player_count}`"
             ),
             color=discord.Color.from_rgb(80, 0, 0),
         )
     else:
         embed = discord.Embed(
-            title="📋 Handler Registration",
+            title="📋 Handler Enlistment — Squadron 86",
             description=(
-                "The front lines are expanding. Handlers are needed.\n\n"
-                "Press **Register as a Handler** to choose your squadron type "
-                "and deployment zone. Your exact spawn will be randomised within safe territory.\n\n"
-                "⚠️ You may only register **once per game**. Choose carefully.\n\n"
-                f"**Registered Handlers:** `{player_count}`"
+                "**Risk Universalis is under siege.**\n\n"
+                "The Legion AI hivemind advances across our borders with no signs of stopping. "
+                "Numbered squadrons — unmanned spider mechs piloted remotely by Handlers "
+                "from the safety of the capital citadel — are our last line of defense.\n\n"
+                "Press **Enlist as Handler** to choose your Number type "
+                "and deployment sector. Your exact spawn will be randomised within safe territory.\n\n"
+                "⚠️ You may only enlist **once per war**. Choose carefully.\n\n"
+                f"**Active Handlers:** `{player_count}`"
             ),
             color=discord.Color.from_rgb(180, 30, 30),
         )
-    embed.set_footer(text="86 — Eighty Six | All units, stand by.")
+    embed.set_footer(text="Risk Universalis 3 — Squadron 86 | All Numbers, stand by.")
     return embed
 
 
 # ── Registration UI flow ──────────────────────────────────────────────────────
 
 class RegistrationView(discord.ui.View):
-    """Persistent button posted by GMs. Any player can press Register."""
+    """Persistent button posted by GMs. Any player can press Enlist."""
     def __init__(self):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="📋  Register as a Handler",
+        label="📋  Enlist as Handler",
         style=discord.ButtonStyle.success,
         custom_id="sq_register_start",
     )
@@ -173,7 +164,7 @@ class RegistrationView(discord.ui.View):
 
         if not game_row or not game_row["game_started"]:
             await interaction.response.send_message(
-                "❌ The game hasn't started yet. Wait for a GM to use `/game_start`.",
+                "❌ The war hasn't begun yet. Wait for Command to issue `/game_start`.",
                 ephemeral=True,
             )
             return
@@ -181,31 +172,31 @@ class RegistrationView(discord.ui.View):
         # Endgame lock — all outer hexes B–G are legion-controlled
         if outer_rows and all(r["status"] in _LEGION_STATUSES for r in outer_rows):
             await interaction.response.send_message(
-                "☠️ **Registration is closed.** The Legion controls all outer hexes — "
-                "the war is over. A full game reset is required before new Handlers can enlist.",
+                "☠️ **Enlistment is closed.** The Legion controls all border sectors — "
+                "Risk Universalis has fallen. A full command reset is required before new Handlers can be assigned.",
                 ephemeral=True,
             )
             return
 
         if existing:
             await interaction.response.send_message(
-                f"❌ You're already registered. Your deploy hex is **{existing['deploy_hex']}**.",
+                f"❌ You're already enlisted. Your Number is deployed at **{existing['deploy_hex']}**.",
                 ephemeral=True,
             )
             return
 
         embed = discord.Embed(
-            title="🔰 Handler Registration — Step 1 of 2: Choose Your Squadron",
+            title="🔰 Handler Enlistment — Step 1 of 2: Choose Your Number Type",
             description=(
-                "Select a **squadron type**. Each archetype has different strengths "
-                "and counters different Legion unit types.\n\n"
+                "Select a **Number type** for your spider mech squadron. "
+                "Each archetype is designed to counter different Legion unit types.\n\n"
                 + "\n\n─────────────────────\n\n".join(
                     v["description"] for v in STARTER_SQUADRONS.values()
                 )
             ),
             color=discord.Color.gold(),
         )
-        embed.set_footer(text="86 — Eighty Six | Choose wisely — this cannot be changed.")
+        embed.set_footer(text="Risk Universalis 3 — Squadron 86 | Choose wisely — this cannot be changed.")
         view = SquadronTypeView(guild_id=interaction.guild_id, owner_id=interaction.user.id,
                                 owner_name=interaction.user.display_name)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
@@ -226,7 +217,7 @@ class SquadronTypeView(discord.ui.View):
     def _make_callback(self, squad_type: str):
         async def callback(interaction: discord.Interaction):
             if interaction.user.id != self.owner_id:
-                await interaction.response.send_message("❌ This isn't your registration.", ephemeral=True)
+                await interaction.response.send_message("❌ This isn't your enlistment form.", ephemeral=True)
                 return
             await _show_deploy_chooser(interaction, self.guild_id, self.owner_id,
                                        self.owner_name, squad_type)
@@ -247,27 +238,27 @@ async def _show_deploy_chooser(interaction, guild_id, owner_id, owner_name, squa
     for outer in DEPLOYABLE_OUTERS:
         st = status_map.get(outer, "neutral")
         if st in _LEGION_STATUSES:
-            label = "Legion Controlled" if st == STATUS_LEGION else "Majority Legion"
-            lines.append(f"🔴 **Hex {outer}** — {label} *(unavailable)*")
+            label = "Legion Controlled" if st == STATUS_LEGION else "Legion Majority"
+            lines.append(f"🔴 **Sector {outer}** — {label} *(unavailable)*")
         else:
             friendly = st.replace("_", " ").title()
-            lines.append(f"⬛ **Hex {outer}** — {friendly}")
+            lines.append(f"⬛ **Sector {outer}** — {friendly}")
 
     chosen_data = STARTER_SQUADRONS[squad_type]
     stats = chosen_data["stats"]
     embed = discord.Embed(
-        title="🔰 Handler Registration — Step 2 of 2: Choose Deployment Zone",
+        title="🔰 Handler Enlistment — Step 2 of 2: Choose Deployment Sector",
         description=(
-            f"**Squadron:** {chosen_data['label']}\n"
+            f"**Number Type:** {chosen_data['label']}\n"
             f"> `ATK {stats['attack']} | DEF {stats['defense']} | SPD {stats['speed']}"
             f" | MOR {stats['morale']} | SUP {stats['supply']} | RCN {stats['recon']}`\n\n"
-            "Choose your **outer hex deployment zone**. Your exact level-3 hex will be "
+            "Choose your **border sector** for deployment. Your exact level-3 position will be "
             "randomly assigned within available (non-Legion) territory.\n\n"
             + "\n".join(lines)
         ),
         color=discord.Color.gold(),
     )
-    embed.set_footer(text="Legion-controlled hexes are unavailable for deployment.")
+    embed.set_footer(text="Legion-controlled sectors are unavailable for deployment.")
     view = DeployZoneView(guild_id=guild_id, owner_id=owner_id, owner_name=owner_name,
                           squad_type=squad_type, available_outers=available)
     await interaction.response.edit_message(embed=embed, view=view)
@@ -281,7 +272,7 @@ class DeployZoneView(discord.ui.View):
         self.owner_name = owner_name
         self.squad_type = squad_type
         for i, outer in enumerate(available_outers):
-            btn = discord.ui.Button(label=f"Hex {outer}", style=discord.ButtonStyle.secondary,
+            btn = discord.ui.Button(label=f"Sector {outer}", style=discord.ButtonStyle.secondary,
                                     custom_id=f"sqdeploy_{outer}", row=i // 4)
             btn.callback = self._make_callback(outer)
             self.add_item(btn)
@@ -289,7 +280,7 @@ class DeployZoneView(discord.ui.View):
     def _make_callback(self, outer: str):
         async def callback(interaction: discord.Interaction):
             if interaction.user.id != self.owner_id:
-                await interaction.response.send_message("❌ This isn't your registration.", ephemeral=True)
+                await interaction.response.send_message("❌ This isn't your enlistment form.", ephemeral=True)
                 return
             await _finalize_registration(interaction, self.guild_id, self.owner_id,
                                          self.owner_name, self.squad_type, outer)
@@ -303,7 +294,7 @@ async def _finalize_registration(interaction, guild_id, owner_id, owner_name, sq
             "SELECT status FROM hexes WHERE guild_id=$1 AND address=$2", guild_id, chosen_outer)
         if outer_row and outer_row["status"] in _LEGION_STATUSES:
             await interaction.response.edit_message(
-                content=f"❌ Hex **{chosen_outer}** was captured while you were choosing. Please start over.",
+                content=f"❌ Sector **{chosen_outer}** was overrun while you were choosing. Please start over.",
                 embed=None, view=None)
             return
 
@@ -329,7 +320,7 @@ async def _finalize_registration(interaction, guild_id, owner_id, owner_name, sq
             guild_id, owner_id)
         if existing:
             await interaction.response.edit_message(
-                content="❌ You already have a registered squadron.", embed=None, view=None)
+                content="❌ You already have an enlisted Number.", embed=None, view=None)
             return
 
         await conn.execute(
@@ -343,19 +334,20 @@ async def _finalize_registration(interaction, guild_id, owner_id, owner_name, sq
         )
 
     embed = discord.Embed(
-        title="✅ Registration Complete",
+        title="✅ Enlistment Confirmed — Welcome to Squadron 86",
         description=(
-            f"Welcome to the front, **{owner_name}**.\n\n"
+            f"Your Number has been assigned, Handler **{owner_name}**.\n\n"
             f"**Squadron:** {squad_name}\n"
             f"**Type:** {chosen_data['label']}\n"
-            f"**Deployed to:** `{deploy_hex}` *(Hex {chosen_outer})*\n\n"
+            f"**Deployed to:** `{deploy_hex}` *(Sector {chosen_outer})*\n\n"
             f"> `ATK {stats['attack']} | DEF {stats['defense']} | SPD {stats['speed']}"
             f" | MOR {stats['morale']} | SUP {stats['supply']} | RCN {stats['recon']}`\n\n"
-            "Open the **Handler HQ** menu to check your status or move your squadron."
+            "Open the **Command Terminal** to check your Number's status or reposition your squadron.\n\n"
+            "*The Legion never rests, Handler. Neither should you.*"
         ),
         color=discord.Color.green(),
     )
-    embed.set_footer(text="86 — Eighty Six | The Legion never stops.")
+    embed.set_footer(text="Risk Universalis 3 — Squadron 86 | The front lines await.")
     await interaction.response.edit_message(embed=embed, view=None)
 
     # Assign the handler role if configured
@@ -368,7 +360,7 @@ async def _finalize_registration(interaction, guild_id, owner_id, owner_name, sq
         if cfg and cfg["handler_role_id"]:
             role = interaction.guild.get_role(cfg["handler_role_id"])
             if role:
-                await interaction.user.add_roles(role, reason="Handler registration")
+                await interaction.user.add_roles(role, reason="Handler enlistment")
     except Exception:
         pass
 
@@ -380,7 +372,7 @@ async def _finalize_registration(interaction, guild_id, owner_id, owner_name, sq
         pass
 
 
-# ── HQ Player Menu ────────────────────────────────────────────────────────────
+# ── Command Terminal (HQ) Player Menu ─────────────────────────────────────────
 
 class HQView(discord.ui.View):
     """
@@ -390,17 +382,17 @@ class HQView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="📋 My Status", style=discord.ButtonStyle.primary,
+    @discord.ui.button(label="📋 My Number", style=discord.ButtonStyle.primary,
                        custom_id="hq_status", row=0)
     async def status_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await _hq_status(interaction)
 
-    @discord.ui.button(label="🚀 Move Squadron", style=discord.ButtonStyle.secondary,
+    @discord.ui.button(label="🚀 Reposition", style=discord.ButtonStyle.secondary,
                        custom_id="hq_move", row=0)
     async def move_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await _hq_move_prompt(interaction)
 
-    @discord.ui.button(label="🗺️ View Map", style=discord.ButtonStyle.secondary,
+    @discord.ui.button(label="🗺️ Front Lines", style=discord.ButtonStyle.secondary,
                        custom_id="hq_map", row=0)
     async def map_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await _hq_map(interaction)
@@ -410,7 +402,7 @@ class HQView(discord.ui.View):
     async def scavenge_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await _hq_scavenge(interaction)
 
-    @discord.ui.button(label="📖 How to Play", style=discord.ButtonStyle.gray,
+    @discord.ui.button(label="📖 Field Manual", style=discord.ButtonStyle.gray,
                        custom_id="hq_help", row=1)
     async def help_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         await _hq_help(interaction)
@@ -428,15 +420,15 @@ async def _hq_status(interaction: discord.Interaction):
         )
     if not squadrons:
         embed = discord.Embed(
-            title="📋 No Squadron Found",
-            description="You haven't registered yet. Use the **Registration** embed to enlist.",
+            title="📋 No Number Assigned",
+            description="You haven't enlisted yet. Use the **Handler Enlistment** embed to register your Number.",
             color=discord.Color.red(),
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return
 
     embed = discord.Embed(
-        title=f"📋 {interaction.user.display_name}'s Squadrons",
+        title=f"📋 {interaction.user.display_name}'s Numbers",
         color=discord.Color.gold(),
     )
     for s in squadrons:
@@ -446,14 +438,14 @@ async def _hq_status(interaction: discord.Interaction):
         embed.add_field(
             name=f"🔰 {s['name']}",
             value=(
-                f"**Location:** `{s['hex_address']}`{transit_info}\n"
-                f"**Home Hex:** {s['home_outer']} | **Deploy Point:** `{s['deploy_hex'] or 'N/A'}`\n"
+                f"**Position:** `{s['hex_address']}`{transit_info}\n"
+                f"**Home Sector:** {s['home_outer']} | **Deploy Point:** `{s['deploy_hex'] or 'N/A'}`\n"
                 f"> `ATK {s['attack']} | DEF {s['defense']} | SPD {s['speed']}"
                 f" | MOR {s['morale']} | SUP {s['supply']} | RCN {s['recon']}`"
             ),
             inline=False,
         )
-    embed.set_footer(text="86 — Eighty Six | Use 🚀 Move Squadron to reposition.")
+    embed.set_footer(text="Risk Universalis 3 — Squadron 86 | Use 🚀 Reposition to redeploy.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -468,19 +460,19 @@ async def _hq_move_prompt(interaction: discord.Interaction):
         )
     if not squadrons:
         await interaction.response.send_message(
-            "❌ You have no active squadron. Register first.", ephemeral=True)
+            "❌ You have no active Number. Enlist first.", ephemeral=True)
         return
 
     embed = discord.Embed(
-        title="🚀 Move Squadron",
+        title="🚀 Reposition Number",
         description=(
-            "To move your squadron, use the slash command:\n"
-            "```\n/squadron_move squadron_name:<name> address:<hex>\n```\n"
+            "To reposition your Number, use the slash command:\n"
+            "```\n/squadron_move squadron_name:<n> address:<sector>\n```\n"
             "**Movement Rules:**\n"
             "> • **Same cluster** (e.g. `B-2-C` → `B-2-4`) — **instant**\n"
             "> • **Adjacent cluster** (edge pos 1–6 only) — **1 turn transit**\n"
-            "> • **Different outer hex** (corner pos X-N-N only) — **2 turns via Hub A**\n\n"
-            "**Your squadrons:**\n"
+            "> • **Different sector** (corner pos X-N-N only) — **2 turns via Citadel Hub A**\n\n"
+            "**Your Numbers:**\n"
             + "\n".join(
                 f"> `{s['name']}` @ `{s['hex_address']}`"
                 + (" *(in transit)*" if s["in_transit"] else "")
@@ -489,12 +481,12 @@ async def _hq_move_prompt(interaction: discord.Interaction):
         ),
         color=discord.Color.blurple(),
     )
-    embed.set_footer(text="Tip: You must be at an edge position to cross clusters or outer hexes.")
+    embed.set_footer(text="Tip: You must be at an edge position to cross clusters or sectors.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def _hq_map(interaction: discord.Interaction):
-    """Send the player an ephemeral outer map snapshot."""
+    """Send the Handler an ephemeral front-line map snapshot."""
     await ensure_guild(interaction.guild_id)
     try:
         from cogs.map_cog import _fetch_map_data, _build_map_embed_and_file, EphemeralDrillView
@@ -506,7 +498,7 @@ async def _hq_map(interaction: discord.Interaction):
         hexes, render_level, squadrons, legion_units = await _fetch_map_data(conn, interaction.guild_id, None)
     if not hexes:
         await interaction.response.send_message(
-            "⚠️ No map data yet. Ask a GM to start the game.", ephemeral=True)
+            "⚠️ No map data yet. Await Command to start the war.", ephemeral=True)
         return
     embed, map_file = _build_map_embed_and_file(hexes, render_level, squadrons, legion_units, None)
     view = EphemeralDrillView(guild_id=interaction.guild_id, address=None, render_level=1)
@@ -515,13 +507,10 @@ async def _hq_map(interaction: discord.Interaction):
 
 async def _hq_scavenge(interaction: discord.Interaction):
     """
-    Attempt to scavenge supply from the current hex.
-    Only usable outside Hub A. One attempt per turn would be ideal but
-    we keep it simple: a d6 roll with a small success window.
-      - Roll 4–6: gain 2 supply (capped at starting archetype max).
+    Attempt to scavenge supply from the current sector.
+    Only usable outside the Citadel Hub A.
+      - Roll 4–6: gain 2 supply (capped at 20).
       - Roll 1–3: nothing found.
-    Cannot push supply above the squadron's original archetype cap (tracked as deploy_hex
-    being set — we use 20 as a hard cap to keep it simple).
     """
     SCAVENGE_CAP   = 20
     SCAVENGE_GAIN  = 2
@@ -535,13 +524,13 @@ async def _hq_scavenge(interaction: discord.Interaction):
         )
         if not sq:
             await interaction.response.send_message(
-                "❌ You have no active squadron.", ephemeral=True)
+                "❌ You have no active Number.", ephemeral=True)
             return
 
         from utils.hexmap import outer_of, SAFE_HUB
         if outer_of(sq["hex_address"]) == SAFE_HUB:
             await interaction.response.send_message(
-                "❌ Nothing to scavenge in Hub A. Deploy to the front lines first.",
+                "❌ Nothing to scavenge within the Citadel. Deploy to the front lines first.",
                 ephemeral=True)
             return
 
@@ -553,9 +542,9 @@ async def _hq_scavenge(interaction: discord.Interaction):
                 "UPDATE squadrons SET supply=$1 WHERE id=$2", new_supply, sq["id"]
             )
             embed = discord.Embed(
-                title="🎒 Scavenge — Success",
+                title="🎒 Scavenge — Supplies Recovered",
                 description=(
-                    f"**{sq['name']}** found usable resources at `{sq['hex_address']}`.\n"
+                    f"**{sq['name']}** recovered usable parts at `{sq['hex_address']}`.\n"
                     f"> Supply: `{sq['supply']}` → `{new_supply}` (+{gained})"
                 ),
                 color=discord.Color.green(),
@@ -564,60 +553,63 @@ async def _hq_scavenge(interaction: discord.Interaction):
             embed = discord.Embed(
                 title="🎒 Scavenge — Nothing Found",
                 description=(
-                    f"**{sq['name']}** searched `{sq['hex_address']}` but found nothing useful.\n"
+                    f"**{sq['name']}** swept `{sq['hex_address']}` but the sector was picked clean.\n"
                     f"> Supply remains at `{sq['supply']}`."
                 ),
                 color=discord.Color.dark_gray(),
             )
-    embed.set_footer(text="86 — Eighty Six | The field provides, or it doesn't.")
+    embed.set_footer(text="Risk Universalis 3 — Squadron 86 | The front provides, or it doesn't.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 async def _hq_help(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="📖 Handler Field Manual",
+        title="📖 Handler Field Manual — Squadron 86",
         color=discord.Color.from_rgb(60, 60, 90),
         description=(
             "## The War\n"
-            "The Republic is under siege by the autonomous **Legion**. "
-            "As a Handler, you command an 86 squadron from the safety of Hub A. "
-            "Capture and hold hexes to push the Legion back.\n\n"
+            "It is **2086 AD**. For sixty years, Risk Universalis has held the line against "
+            "**The Legion** — an AI hivemind that controls spider mech tanks with terrifying "
+            "coordination. You are a **Handler**: a remote pilot commanding an unmanned "
+            "**Number** from the safety of the capital citadel, while your machine fights on "
+            "the front lines. The Legion has grown stronger. Numbered squadrons grow fewer. "
+            "Squadron **86** is newly formed — and it falls to you.\n\n"
             "## The Map\n"
-            "> The map is divided into **Outer Hexes** (A–G), each split into "
-            "**7 mid-clusters**, each split into **7 inner hexes**. "
-            "Your squadron lives at a **level-3** (inner) hex at all times.\n"
-            "> **Hex A** is your safe hub — the Legion can never enter.\n\n"
+            "> The continent is divided into **Sectors** (A–G), each split into "
+            "**7 mid-clusters**, each split into **7 inner positions**. "
+            "Your Number operates at a **level-3** (inner) position at all times.\n"
+            "> **Sector A** is the capital citadel — The Legion can never breach it.\n\n"
             "## Movement\n"
-            "> • **Same cluster** → instant (free move)\n"
+            "> • **Same cluster** → instant (free repositioning)\n"
             "> • **Adjacent cluster** → 1 turn *(must be at edge pos 1–6, not C)*\n"
-            "> • **Different outer hex** → 2 turns via Hub A *(must be at corner X-N-N)*\n\n"
+            "> • **Different sector** → 2 turns via Citadel Hub A *(must be at corner X-N-N)*\n\n"
             "## Combat\n"
-            "> Combat resolves automatically each turn. If your squadron shares a hex "
-            "with a Legion unit, a d20 roll modified by your stats decides the outcome. "
-            "Multiple Legion units in one hex cause **battle fatigue** — each fight "
+            "> Combat resolves automatically each turn. If your Number shares a position "
+            "with a Legion unit, a d20 roll modified by your stats determines the outcome. "
+            "Multiple Legion units in one position cause **battle fatigue** — each engagement "
             "drains your effective Attack and Morale.\n\n"
             "## Legion Unit Types\n"
-            "> 🐺 **Grauwolf** — Balanced wolf-pack unit\n"
-            "> 🦁 **Löwe** — High Defence; use a Vanguard to crack it\n"
-            "> 🦕 **Dinosauria** — Swarm attacker; Fortress absorbs it best\n"
-            "> 🤖 **Juggernaut** — Heavy armoured; needs high ATK to defeat\n"
-            "> 👁️ **Shepherd** — Command unit with high Recon; Recon squads counter it\n\n"
+            "> 🐺 **Grauwolf** — Balanced wolf-pack unit; the Legion's standard infantry\n"
+            "> 🦁 **Löwe** — High Defence; deploy Vanguard Numbers to crack its armour\n"
+            "> 🦕 **Dinosauria** — Swarm attacker; Fortress Numbers absorb it best\n"
+            "> 🤖 **Juggernaut** — Heavy assault mech; demands high ATK to defeat\n"
+            "> 👁️ **Shepherd** — Legion command unit with high Recon; Recon Numbers counter it\n\n"
             "## Stats\n"
             "> `ATK` — Damage output | `DEF` — Damage mitigation\n"
             "> `SPD` — Initiative (who strikes first) | `MOR` — Reroll chance on bad dice\n"
-            "> `SUP` — Supply; drains 1 per turn outside Hub A. Below 5 = -2 to all rolls. "
+            "> `SUP` — Supply; drains 1 per turn outside the Citadel. Below 5 = -2 to all rolls. "
             "Scavenge in the field to recover.\n"
             "> `RCN` — Recon; two effects: (1) if your RCN exceeds the Legion unit's, "
-            "you gain +1 ATK from intel. (2) Shepherd and Dinosauria gain +3 DEF against "
-            "squadrons with RCN below 8 — high Recon squads negate this entirely.\n\n"
-            "## Defeat & Pushback\n"
-            "> If your squadron loses a hex, it falls back to the nearest friendly or neutral "
-            "hex. If the whole cluster is overrun it escalates to an adjacent cluster, then "
-            "outer hex. If all outer hexes B–G fall, **The Final Defense in the Citadel** "
-            "is declared and all squadrons scatter inside Hub A for a last stand."
+            "you gain +1 ATK from battlefield intel. (2) Shepherd and Dinosauria gain +3 DEF against "
+            "Numbers with RCN below 8 — high Recon Numbers negate this entirely.\n\n"
+            "## Defeat & Fallback\n"
+            "> If your Number loses a position, it falls back to the nearest friendly or neutral "
+            "position. If the whole cluster is overrun it escalates to an adjacent cluster, then "
+            "the outer sector. If all sectors B–G fall, **The Final Defense of the Citadel** "
+            "is declared and all Numbers scatter inside Hub A for a last stand."
         ),
     )
-    embed.set_footer(text="86 — Eighty Six | Use 📋 My Status to check your position.")
+    embed.set_footer(text="Risk Universalis 3 — Squadron 86 | Use 📋 My Number to check your position.")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -631,7 +623,7 @@ class SquadronCog(commands.Cog):
 
     @app_commands.command(
         name="post_registration",
-        description="[GM/Admin] Post the Handler registration embed to this channel.",
+        description="[GM/Admin] Post the Handler enlistment embed to this channel.",
     )
     async def post_registration(self, interaction: discord.Interaction):
         # Defer immediately to avoid Discord's 3-second timeout
@@ -661,7 +653,7 @@ class SquadronCog(commands.Cog):
             or (gm_role_id and any(r.id == gm_role_id for r in interaction.user.roles))
         )
         if not is_privileged:
-            await interaction.followup.send("❌ GMs and admins only.", ephemeral=True)
+            await interaction.followup.send("❌ GMs and Command only.", ephemeral=True)
             return
 
         all_legion = all(r["status"] in _LEGION_STATUSES for r in outer_rows) if outer_rows else False
@@ -676,7 +668,7 @@ class SquadronCog(commands.Cog):
 
     @app_commands.command(
         name="post_hq",
-        description="[GM/Admin] Post the Handler HQ menu embed to this channel.",
+        description="[GM/Admin] Post the Handler Command Terminal embed to this channel.",
     )
     async def post_hq(self, interaction: discord.Interaction):
         # Defer immediately to avoid Discord's 3-second timeout
@@ -698,27 +690,28 @@ class SquadronCog(commands.Cog):
             or (gm_role_id and any(r.id == gm_role_id for r in interaction.user.roles))
         )
         if not is_privileged:
-            await interaction.followup.send("❌ GMs and admins only.", ephemeral=True)
+            await interaction.followup.send("❌ GMs and Command only.", ephemeral=True)
             return
 
         embed = discord.Embed(
-            title="🏢 Handler HQ",
+            title="🖥️ Command Terminal — Squadron 86",
             description=(
-                "Welcome, Handler. Select an action below.\n\n"
-                "> 📋 **My Status** — View your squadron's location and stats\n"
-                "> 🚀 **Move Squadron** — Instructions for repositioning\n"
-                "> 🗺️ **View Map** — See the current strategic situation\n"
-                "> 📖 **How to Play** — Rules, movement, combat, and unit types"
+                "Welcome, Handler. Your Number is active on the front lines.\n\n"
+                "> 📋 **My Number** — View your squadron's position and combat stats\n"
+                "> 🚀 **Reposition** — Instructions for repositioning your Number\n"
+                "> 🗺️ **Front Lines** — View the current strategic situation\n"
+                "> 🎒 **Scavenge** — Attempt to recover supplies from the field\n"
+                "> 📖 **Field Manual** — Rules, movement, combat, and Legion unit types"
             ),
             color=discord.Color.from_rgb(30, 60, 120),
         )
-        embed.set_footer(text="86 — Eighty Six | All responses are private.")
+        embed.set_footer(text="Risk Universalis 3 — Squadron 86 | All responses are private.")
         await interaction.followup.send(embed=embed, view=HQView())
 
-    @app_commands.command(name="squadron_move", description="Move your squadron to a level-3 hex.")
+    @app_commands.command(name="squadron_move", description="Reposition your Number to a level-3 sector.")
     @app_commands.describe(
-        squadron_name="Name of your squadron",
-        address="Target level-3 hex (e.g. B-2-4). Same cluster=instant. Adjacent cluster=1 turn. Different outer=2 turns via Hub A.",
+        squadron_name="Name of your Number squadron",
+        address="Target level-3 position (e.g. B-2-4). Same cluster=instant. Adjacent cluster=1 turn. Different sector=2 turns via Citadel.",
     )
     async def move(self, interaction: discord.Interaction, squadron_name: str, address: str):
         address = address.strip().upper()
@@ -726,7 +719,7 @@ class SquadronCog(commands.Cog):
 
         if level_of(address) != 3:
             await interaction.response.send_message(
-                "❌ You must move to a level-3 hex (e.g. `B-2-4` or `A-C-1`).", ephemeral=True)
+                "❌ You must move to a level-3 position (e.g. `B-2-4` or `A-C-1`).", ephemeral=True)
             return
 
         pool = await get_pool()
@@ -738,11 +731,11 @@ class SquadronCog(commands.Cog):
             )
             if not sq:
                 await interaction.response.send_message(
-                    f"❌ No active squadron named **{squadron_name}**.", ephemeral=True)
+                    f"❌ No active Number named **{squadron_name}**.", ephemeral=True)
                 return
             if sq["in_transit"]:
                 await interaction.response.send_message(
-                    "❌ This squadron is already in transit. Wait for the turn to resolve.",
+                    "❌ This Number is already in transit. Await the next turn to resolve.",
                     ephemeral=True)
                 return
             hex_exists = await conn.fetchrow(
@@ -751,7 +744,7 @@ class SquadronCog(commands.Cog):
             )
             if not hex_exists:
                 await interaction.response.send_message(
-                    f"❌ Hex `{address}` doesn't exist.", ephemeral=True)
+                    f"❌ Position `{address}` doesn't exist.", ephemeral=True)
                 return
 
             current = sq["hex_address"]
@@ -763,14 +756,14 @@ class SquadronCog(commands.Cog):
             if current_mid == target_mid:
                 await conn.execute("UPDATE squadrons SET hex_address=$1 WHERE id=$2", address, sq["id"])
                 await interaction.response.send_message(
-                    f"📡 **{squadron_name}** moved to **{address}**.", ephemeral=True)
+                    f"📡 **{squadron_name}** repositioned to **{address}**.", ephemeral=True)
                 return
 
             if target_outer == current_outer:
                 if not is_edge_inner(current):
                     await interaction.response.send_message(
                         f"❌ **{squadron_name}** is at center position `C`. "
-                        f"Move to an edge hex (pos 1–6) first.", ephemeral=True)
+                        f"Move to an edge position (pos 1–6) first.", ephemeral=True)
                     return
                 reachable = adjacent_inner_clusters(current)
                 if target_mid not in reachable:
@@ -783,15 +776,15 @@ class SquadronCog(commands.Cog):
                     "UPDATE squadrons SET in_transit=TRUE, transit_destination=$1, transit_step=2 WHERE id=$2",
                     entry, sq["id"])
                 await interaction.response.send_message(
-                    f"🚶 **{squadron_name}** crossing to `{target_mid}`, arriving at `{entry}` next turn.",
+                    f"🚶 **{squadron_name}** crossing to cluster `{target_mid}`, arriving at `{entry}` next turn.",
                     ephemeral=True)
                 return
 
             crossable_outer = can_cross_to_outer(current)
             if crossable_outer is None:
                 await interaction.response.send_message(
-                    f"❌ Cannot cross outer hexes from `{current}`. "
-                    f"Move to a corner hex (e.g. `B-2-2`) first.", ephemeral=True)
+                    f"❌ Cannot cross sectors from `{current}`. "
+                    f"Move to a corner position (e.g. `B-2-2`) first.", ephemeral=True)
                 return
 
             if current_outer == SAFE_HUB:
@@ -800,7 +793,7 @@ class SquadronCog(commands.Cog):
                     "UPDATE squadrons SET in_transit=TRUE, transit_destination=$1, transit_step=2, home_outer=$2 WHERE id=$3",
                     entry, target_outer, sq["id"])
                 await interaction.response.send_message(
-                    f"🚶 **{squadron_name}** deploying to **Hex {target_outer}**, arriving at `{entry}` next turn.",
+                    f"🚶 **{squadron_name}** deploying to **Sector {target_outer}**, arriving at `{entry}` next turn.",
                     ephemeral=True)
             elif target_outer == SAFE_HUB:
                 entry = entry_hex_for_outer(SAFE_HUB, current_outer)
@@ -808,7 +801,7 @@ class SquadronCog(commands.Cog):
                     "UPDATE squadrons SET in_transit=TRUE, transit_destination=$1, transit_step=2, home_outer=$2 WHERE id=$3",
                     entry, SAFE_HUB, sq["id"])
                 await interaction.response.send_message(
-                    f"🚶 **{squadron_name}** withdrawing to **Hub A**, arriving at `{entry}` next turn.",
+                    f"🚶 **{squadron_name}** withdrawing to **Citadel Hub A**, arriving at `{entry}` next turn.",
                     ephemeral=True)
             else:
                 hub_entry = entry_hex_for_outer(SAFE_HUB, current_outer)
@@ -816,10 +809,10 @@ class SquadronCog(commands.Cog):
                     "UPDATE squadrons SET in_transit=TRUE, transit_destination=$1, transit_step=1, home_outer=$2 WHERE id=$3",
                     target_outer, SAFE_HUB, sq["id"])
                 await interaction.response.send_message(
-                    f"🚶 **{squadron_name}** begins transit **{current_outer} → Hub A → {target_outer}**. "
+                    f"🚶 **{squadron_name}** begins transit **Sector {current_outer} → Citadel Hub A → Sector {target_outer}**. "
                     f"Arrives at `{hub_entry}` next turn (2 turns total).", ephemeral=True)
 
-    @app_commands.command(name="squadron_status", description="View your squadron stats and location.")
+    @app_commands.command(name="squadron_status", description="View your Number's stats and position.")
     async def status(self, interaction: discord.Interaction):
         await _hq_status(interaction)
 
