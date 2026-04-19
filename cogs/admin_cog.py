@@ -49,7 +49,7 @@ class AdminCog(commands.Cog):
                 "The game has started. The Legion advances.\n\n"
                 "**Hex A** is under player control — your safe hub.\n\n"
                 "Handlers — a GM must use `/post_registration` to open sign-ups.\n"
-                "Gamemasters — use `/set_gamemaster_role` to assign Legion control."
+                "Gamemasters — use `/set_gamemaster_role` to assign Legion control.\n""Admins — use `/set_handler_role` to assign a role to registered Handlers."
             ),
             color=discord.Color.red(),
         )
@@ -104,6 +104,23 @@ class AdminCog(commands.Cog):
                 interaction.guild_id
             )
 
+        # Strip the handler role from all players on reset
+        try:
+            async with pool.acquire() as conn2:
+                cfg = await conn2.fetchrow(
+                    "SELECT handler_role_id FROM guild_config WHERE guild_id=$1", interaction.guild_id
+                )
+            if cfg and cfg["handler_role_id"]:
+                role = interaction.guild.get_role(cfg["handler_role_id"])
+                if role:
+                    for member in role.members:
+                        try:
+                            await member.remove_roles(role, reason="Game reset")
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+
         await interaction.response.send_message("🔄 Game reset. All data cleared. Hex A restored.", ephemeral=False)
 
     @app_commands.command(name="set_turn_interval", description="[Admin] Set hours between turns.")
@@ -122,6 +139,27 @@ class AdminCog(commands.Cog):
                 hours, interaction.guild_id,
             )
         await interaction.response.send_message(f"✅ Turn interval set to **{hours}h**.", ephemeral=True)
+
+    @app_commands.command(name="set_handler_role", description="[Admin] Set the Discord role assigned to registered Handlers.")
+    @app_commands.describe(role="The role to assign when a player registers as a Handler")
+    async def set_handler_role(self, interaction: discord.Interaction, role: discord.Role):
+        if not self._is_admin(interaction):
+            await interaction.response.send_message("❌ Admins only.", ephemeral=True)
+            return
+        await ensure_guild(interaction.guild_id)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS handler_role_id BIGINT DEFAULT NULL"
+            )
+            await conn.execute(
+                "UPDATE guild_config SET handler_role_id=$1 WHERE guild_id=$2",
+                role.id, interaction.guild_id,
+            )
+        await interaction.response.send_message(
+            f"✅ Handler role set to {role.mention}. "
+            f"Players will receive this role upon registration.", ephemeral=True
+        )
 
     @app_commands.command(name="game_status", description="View current war status.")
     async def game_status(self, interaction: discord.Interaction):
@@ -144,7 +182,9 @@ class AdminCog(commands.Cog):
             gm_role_id = config["gamemaster_role_id"] if config else None
 
         hex_info = {r["status"]: r["cnt"] for r in hex_stats}
-        gm_text = f"<@&{gm_role_id}>" if gm_role_id else "Not set — use `/set_gamemaster_role`"
+        gm_text      = f"<@&{gm_role_id}>" if gm_role_id else "Not set — use `/set_gamemaster_role`"
+        handler_role_id = config["handler_role_id"] if config and "handler_role_id" in config.keys() else None
+        handler_text = f"<@&{handler_role_id}>" if handler_role_id else "Not set — use `/set_handler_role`"
 
         embed = discord.Embed(title="📊 War Status", color=discord.Color.blurple())
         embed.add_field(name="Status", value="🟢 Active" if config["game_started"] else "🔴 Paused", inline=True)
@@ -153,6 +193,7 @@ class AdminCog(commands.Cog):
         embed.add_field(name="Active Handlers", value=str(player_count), inline=True)
         embed.add_field(name="Active Legion Units", value=str(legion_count), inline=True)
         embed.add_field(name="Gamemaster Role", value=gm_text, inline=True)
+        embed.add_field(name="Handler Role", value=handler_text, inline=True)
         embed.add_field(
             name="Outer Hex Status",
             value="\n".join(f"**{k}**: {v}" for k, v in hex_info.items()) or "No data",
