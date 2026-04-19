@@ -71,24 +71,86 @@ async def send_hex_view(
             )
             render_level = level_of(address) + 1
 
-        # Load squadron presence for this level's hexes
         hex_addrs = [r["address"] for r in rows]
         squadrons = []
         legion_units = []
-        if hex_addrs:
-            sq_rows = await conn.fetch(
-                "SELECT hex_address AS address, owner_name, in_transit FROM squadrons "
-                "WHERE guild_id=$1 AND is_active=TRUE AND hex_address = ANY($2::text[])",
-                guild_id, hex_addrs
-            )
-            squadrons = [dict(r) for r in sq_rows]
 
-            lu_rows = await conn.fetch(
-                "SELECT hex_address AS address FROM legion_units "
-                "WHERE guild_id=$1 AND is_active=TRUE AND hex_address = ANY($2::text[])",
-                guild_id, hex_addrs
-            )
-            legion_units = [dict(r) for r in lu_rows]
+        if hex_addrs:
+            if render_level == 3:
+                # Level-3 view: units are directly here
+                sq_rows = await conn.fetch(
+                    "SELECT hex_address AS address, owner_name, in_transit FROM squadrons "
+                    "WHERE guild_id=$1 AND is_active=TRUE AND hex_address = ANY($2::text[])",
+                    guild_id, hex_addrs
+                )
+                squadrons = [dict(r) for r in sq_rows]
+
+                lu_rows = await conn.fetch(
+                    "SELECT hex_address AS address FROM legion_units "
+                    "WHERE guild_id=$1 AND is_active=TRUE AND hex_address = ANY($2::text[])",
+                    guild_id, hex_addrs
+                )
+                legion_units = [dict(r) for r in lu_rows]
+            else:
+                # Level-1 or level-2 view: aggregate presence from level-3 descendants.
+                # For level-1: each hex in hex_addrs is an outer; aggregate all X-*-* under it.
+                # For level-2: each hex in hex_addrs is a mid; aggregate all X-Y-* under it.
+                # We query all level-3 squadrons/legion in the subtree and map them back
+                # to their level-(render_level) ancestor.
+                if render_level == 2:
+                    # hex_addrs are mid-hex labels like ["B-1","B-2",...].
+                    # Squadrons/legion live at level-3 whose parent_address is in hex_addrs.
+                    sq_rows = await conn.fetch(
+                        "SELECT s.hex_address, s.owner_name, s.in_transit "
+                        "FROM squadrons s "
+                        "JOIN hexes h ON h.guild_id = s.guild_id AND h.address = s.hex_address "
+                        "WHERE s.guild_id=$1 AND s.is_active=TRUE AND h.level=3 "
+                        "AND h.parent_address = ANY($2::text[])",
+                        guild_id, hex_addrs
+                    )
+                    for r in sq_rows:
+                        parent = r["hex_address"].rsplit("-", 1)[0]
+                        squadrons.append({"address": parent, "owner_name": r["owner_name"],
+                                          "in_transit": r["in_transit"]})
+
+                    lu_rows = await conn.fetch(
+                        "SELECT lu.hex_address "
+                        "FROM legion_units lu "
+                        "JOIN hexes h ON h.guild_id = lu.guild_id AND h.address = lu.hex_address "
+                        "WHERE lu.guild_id=$1 AND lu.is_active=TRUE AND h.level=3 "
+                        "AND h.parent_address = ANY($2::text[])",
+                        guild_id, hex_addrs
+                    )
+                    for r in lu_rows:
+                        parent = r["hex_address"].rsplit("-", 1)[0]
+                        legion_units.append({"address": parent})
+                else:
+                    # render_level == 1: outer hex view. hex_addrs are outer labels ["A","B",...].
+                    # Aggregate all level-3 units whose outer matches.
+                    sq_rows = await conn.fetch(
+                        "SELECT s.hex_address, s.owner_name, s.in_transit "
+                        "FROM squadrons s "
+                        "JOIN hexes h ON h.guild_id = s.guild_id AND h.address = s.hex_address "
+                        "WHERE s.guild_id=$1 AND s.is_active=TRUE AND h.level=3 "
+                        "AND split_part(s.hex_address, '-', 1) = ANY($2::text[])",
+                        guild_id, hex_addrs
+                    )
+                    for r in sq_rows:
+                        outer = r["hex_address"].split("-")[0]
+                        squadrons.append({"address": outer, "owner_name": r["owner_name"],
+                                          "in_transit": r["in_transit"]})
+
+                    lu_rows = await conn.fetch(
+                        "SELECT lu.hex_address "
+                        "FROM legion_units lu "
+                        "JOIN hexes h ON h.guild_id = lu.guild_id AND h.address = lu.hex_address "
+                        "WHERE lu.guild_id=$1 AND lu.is_active=TRUE AND h.level=3 "
+                        "AND split_part(lu.hex_address, '-', 1) = ANY($2::text[])",
+                        guild_id, hex_addrs
+                    )
+                    for r in lu_rows:
+                        outer = r["hex_address"].split("-")[0]
+                        legion_units.append({"address": outer})
 
     hexes = [dict(r) for r in rows]
 
