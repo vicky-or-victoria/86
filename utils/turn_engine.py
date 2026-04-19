@@ -70,37 +70,38 @@ class TurnEngine:
         turn_number = (turn_row["cnt"] or 0) + 1
         summaries = []
 
-        # 1. Process player transit
-        await self._process_transit(conn, guild_id, summaries)
+        async with conn.transaction():
+            # 1. Process player transit
+            await self._process_transit(conn, guild_id, summaries)
 
-        # 2. Apply queued GM legion moves
-        await self._apply_gm_moves(conn, guild_id, summaries)
+            # 2. Apply queued GM legion moves
+            await self._apply_gm_moves(conn, guild_id, summaries)
 
-        # 3. AI moves unmoved Legion units
-        await self._legion_ai(conn, guild_id, summaries)
+            # 3. AI moves unmoved Legion units
+            await self._legion_ai(conn, guild_id, summaries)
 
-        # 4. Resolve combat
-        await self._resolve_combat(conn, guild_id, turn_number, summaries)
+            # 4. Resolve combat
+            await self._resolve_combat(conn, guild_id, turn_number, summaries)
 
-        # 5. Recompute hex statuses
-        await recompute_hex_statuses(conn, guild_id)
+            # 5. Recompute hex statuses
+            await recompute_hex_statuses(conn, guild_id)
 
-        # 6. Clear GM move flags
-        await conn.execute(
-            "UPDATE legion_units SET manually_moved=FALSE WHERE guild_id=$1", guild_id
-        )
-        await conn.execute(
-            "DELETE FROM legion_gm_moves WHERE guild_id=$1", guild_id
-        )
+            # 6. Clear GM move flags
+            await conn.execute(
+                "UPDATE legion_units SET manually_moved=FALSE WHERE guild_id=$1", guild_id
+            )
+            await conn.execute(
+                "DELETE FROM legion_gm_moves WHERE guild_id=$1", guild_id
+            )
 
-        # 7. Record turn
-        await conn.execute(
-            "INSERT INTO turn_history (guild_id, turn_number) VALUES ($1,$2)",
-            guild_id, turn_number
-        )
-        await conn.execute(
-            "UPDATE guild_config SET last_turn_at=NOW() WHERE guild_id=$1", guild_id
-        )
+            # 7. Record turn
+            await conn.execute(
+                "INSERT INTO turn_history (guild_id, turn_number) VALUES ($1,$2)",
+                guild_id, turn_number
+            )
+            await conn.execute(
+                "UPDATE guild_config SET last_turn_at=NOW() WHERE guild_id=$1", guild_id
+            )
 
         await self._post_summary(guild_id, turn_number, summaries)
 
@@ -258,56 +259,76 @@ class TurnEngine:
                 morale=avg("morale"), supply=avg("supply"), recon=avg("recon"),
             )
 
-            l = l_units[0]
-            legion_unit = CombatUnit(
-                name=f"Legion {l['unit_type']}",
-                side="legion",
-                attack=l["attack"], defense=l["defense"], speed=l["speed"],
-                morale=l["morale"], supply=l["supply"], recon=l["recon"],
-            )
-
-            result = resolve_combat(player_unit, legion_unit)
-
-            if result.outcome == "attacker_wins":
-                new_ctrl = "players"
-                await conn.execute(
-                    "UPDATE legion_units SET is_active=FALSE WHERE id=$1", l["id"]
+            # Fight each Legion unit in the hex sequentially
+            for l in l_units:
+                legion_unit = CombatUnit(
+                    name=f"Legion {l['unit_type']}",
+                    side="legion",
+                    attack=l["attack"], defense=l["defense"], speed=l["speed"],
+                    morale=l["morale"], supply=l["supply"], recon=l["recon"],
                 )
-            elif result.outcome == "defender_wins":
-                new_ctrl = "legion"
-            else:
-                new_ctrl = "neutral"  # draw — stays contested
 
-            await conn.execute(
-                "UPDATE hexes SET controller=$1 WHERE guild_id=$2 AND address=$3",
-                new_ctrl, guild_id, hex_addr
-            )
-            await conn.execute(
-                """INSERT INTO combat_log
-                   (guild_id, turn_number, hex_address, attacker, defender,
-                    attacker_roll, defender_roll, outcome)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
-                guild_id, turn_number, hex_addr,
-                result.attacker, result.defender,
-                result.attacker_roll, result.defender_roll, result.outcome
-            )
-            summaries.append(f"⚔️ **Hex {hex_addr}**: {result.narrative}")
+                result = resolve_combat(player_unit, legion_unit)
+
+                if result.outcome == "attacker_wins":
+                    new_ctrl = "players"
+                    await conn.execute(
+                        "UPDATE legion_units SET is_active=FALSE WHERE id=$1", l["id"]
+                    )
+                elif result.outcome == "defender_wins":
+                    new_ctrl = "legion"
+                else:
+                    new_ctrl = "neutral"  # draw — stays contested
+
+                await conn.execute(
+                    "UPDATE hexes SET controller=$1 WHERE guild_id=$2 AND address=$3",
+                    new_ctrl, guild_id, hex_addr
+                )
+                await conn.execute(
+                    """INSERT INTO combat_log
+                       (guild_id, turn_number, hex_address, attacker, defender,
+                        attacker_roll, defender_roll, outcome)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)""",
+                    guild_id, turn_number, hex_addr,
+                    result.attacker, result.defender,
+                    result.attacker_roll, result.defender_roll, result.outcome
+                )
+                summaries.append(f"⚔️ **Hex {hex_addr}**: {result.narrative}")
 
     # ── Post summary ──────────────────────────────────────────────────────────
     async def _post_summary(self, guild_id: int, turn_number: int, summaries: list):
         guild = self.bot.get_guild(guild_id)
         if not guild:
             return
-        for channel in guild.text_channels:
-            if channel.permissions_for(guild.me).send_messages:
-                embed = discord.Embed(
-                    title=f"⚔️ Turn {turn_number} — After Action Report",
-                    color=discord.Color.red(),
-                    description="\n".join(summaries) if summaries else "No activity this turn.",
-                )
-                embed.set_footer(text="86 — Eighty Six | The Legion never stops.")
-                await channel.send(embed=embed)
-                break
+
+        # Use the configured report channel if set, otherwise fall back to first writable channel
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            config = await conn.fetchrow(
+                "SELECT report_channel_id FROM guild_config WHERE guild_id=$1", guild_id
+            )
+
+        channel = None
+        if config and config["report_channel_id"]:
+            channel = guild.get_channel(config["report_channel_id"])
+
+        if channel is None:
+            for ch in guild.text_channels:
+                if ch.permissions_for(guild.me).send_messages:
+                    channel = ch
+                    break
+
+        if channel is None:
+            log.warning(f"No writable channel found for guild {guild_id}")
+            return
+
+        embed = discord.Embed(
+            title=f"⚔️ Turn {turn_number} — After Action Report",
+            color=discord.Color.red(),
+            description="\n".join(summaries) if summaries else "No activity this turn.",
+        )
+        embed.set_footer(text="86 — Eighty Six | The Legion never stops.")
+        await channel.send(embed=embed)
 
 
 def _random_unit_type() -> str:
