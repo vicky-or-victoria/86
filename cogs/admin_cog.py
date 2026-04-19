@@ -11,7 +11,6 @@ class AdminCog(commands.Cog):
         self.bot = bot
 
     def _is_admin(self, interaction: discord.Interaction) -> bool:
-        # Bot owner always has admin access regardless of server role
         if interaction.user.id == self.bot.bot_owner_id:
             return True
         return (interaction.user.guild_permissions.administrator or
