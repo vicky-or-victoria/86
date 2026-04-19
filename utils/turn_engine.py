@@ -187,8 +187,10 @@ async def _trigger_final_defense(conn, guild_id: int, summaries: list):
         )
         summaries.append(f"🏰 **{sq['owner_name']}'s {sq['name']}** pulled back to `{dest}`.")
 
-    # Remove the SAFE_HUB protection — Legion AI will no longer skip it
-    # We signal this by setting a guild_config flag. Add the column if it doesn't exist yet.
+    # Ensure the column exists (safe for live DBs that predate this migration)
+    await conn.execute(
+        "ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS citadel_besieged BOOLEAN NOT NULL DEFAULT FALSE"
+    )
     await conn.execute(
         "UPDATE guild_config SET citadel_besieged=TRUE WHERE guild_id=$1", guild_id
     )
@@ -365,10 +367,13 @@ class TurnEngine:
         - Advance: prefer neutral > player > legion hexes.
         """
         # Check if citadel is besieged (Final Defense active)
-        cfg = await conn.fetchrow(
-            "SELECT citadel_besieged FROM guild_config WHERE guild_id=$1", guild_id
-        )
-        citadel_besieged = cfg["citadel_besieged"] if cfg and "citadel_besieged" in cfg.keys() else False
+        try:
+            cfg = await conn.fetchrow(
+                "SELECT citadel_besieged FROM guild_config WHERE guild_id=$1", guild_id
+            )
+            citadel_besieged = bool(cfg["citadel_besieged"]) if cfg and cfg["citadel_besieged"] is not None else False
+        except Exception:
+            citadel_besieged = False
 
         # ── Spawn ─────────────────────────────────────────────────────────────
         neutral_outer = await conn.fetch(
@@ -586,10 +591,13 @@ class TurnEngine:
 
         if final_defense_needed:
             # Only trigger if not already besieged
-            cfg = await conn.fetchrow(
-                "SELECT citadel_besieged FROM guild_config WHERE guild_id=$1", guild_id
-            )
-            already = cfg["citadel_besieged"] if cfg and "citadel_besieged" in cfg.keys() else False
+            try:
+                cfg = await conn.fetchrow(
+                    "SELECT citadel_besieged FROM guild_config WHERE guild_id=$1", guild_id
+                )
+                already = bool(cfg["citadel_besieged"]) if cfg and cfg["citadel_besieged"] is not None else False
+            except Exception:
+                already = False
             if not already:
                 await _trigger_final_defense(conn, guild_id, summaries)
 
