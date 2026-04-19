@@ -15,7 +15,6 @@ from utils.hexmap import OUTER_LABELS, SAFE_HUB, SUB_POSITIONS, outer_of, level_
 
 async def is_gm(interaction: discord.Interaction) -> bool:
     """Check if user is the bot owner, server owner, or has the Gamemaster role."""
-    # Bot owner always has GM access in any server
     bot_owner_id = getattr(interaction.client, "bot_owner_id", 0)
     if bot_owner_id and interaction.user.id == bot_owner_id:
         return True
