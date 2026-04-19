@@ -48,7 +48,7 @@ class AdminCog(commands.Cog):
             description=(
                 "The game has started. The Legion advances.\n\n"
                 "**Hex A** is under player control — your safe hub.\n\n"
-                "Handlers — register your squadrons with `/squadron_register`.\n"
+                "Handlers — a GM must use `/post_registration` to open sign-ups.\n"
                 "Gamemasters — use `/set_gamemaster_role` to assign Legion control."
             ),
             color=discord.Color.red(),
