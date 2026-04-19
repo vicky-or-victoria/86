@@ -31,10 +31,11 @@ CREATE TABLE IF NOT EXISTS squadrons (
     owner_name TEXT NOT NULL DEFAULT 'Handler',
     name TEXT NOT NULL,
     hex_address TEXT NOT NULL,
+    deploy_hex TEXT DEFAULT NULL,           -- locked level-3 deploy point chosen at registration
     home_outer TEXT NOT NULL DEFAULT 'A',  -- outer hex this squadron belongs to
     in_transit BOOLEAN NOT NULL DEFAULT FALSE,
-    transit_destination TEXT DEFAULT NULL,  -- outer hex they're headed to
-    transit_step INT NOT NULL DEFAULT 0,    -- 0=not in transit,1=going to A,2=going to dest
+    transit_destination TEXT DEFAULT NULL,  -- level-3 address they're headed to
+    transit_step INT NOT NULL DEFAULT 0,    -- 0=not in transit,1=going to A-C-C,2=going to dest
     attack INT NOT NULL DEFAULT 10,
     defense INT NOT NULL DEFAULT 10,
     speed INT NOT NULL DEFAULT 10,
@@ -104,6 +105,7 @@ DO $$ BEGIN
     ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS report_channel_id BIGINT DEFAULT NULL;
     ALTER TABLE hexes ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'neutral';
     ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS owner_name TEXT NOT NULL DEFAULT 'Handler';
+    ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS deploy_hex TEXT DEFAULT NULL;
     ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS home_outer TEXT NOT NULL DEFAULT 'A';
     ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS in_transit BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS transit_destination TEXT DEFAULT NULL;
