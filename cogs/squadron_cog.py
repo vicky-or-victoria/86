@@ -122,6 +122,7 @@ class SquadronCog(commands.Cog):
     )
     async def move(self, interaction: discord.Interaction, squadron_name: str, address: str):
         address = address.strip().upper()
+        await ensure_guild(interaction.guild_id)
         pool = await get_pool()
         async with pool.acquire() as conn:
             sq = await conn.fetchrow(
@@ -194,6 +195,7 @@ class SquadronCog(commands.Cog):
 
     @app_commands.command(name="squadron_status", description="View your squadron stats and location.")
     async def status(self, interaction: discord.Interaction):
+        await ensure_guild(interaction.guild_id)
         pool = await get_pool()
         async with pool.acquire() as conn:
             squadrons = await conn.fetch(
