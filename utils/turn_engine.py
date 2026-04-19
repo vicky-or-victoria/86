@@ -24,6 +24,8 @@ from utils.hexmap import (
     OUTER_LABELS, SUB_POSITIONS, SAFE_HUB,
     recompute_hex_statuses, sub_addresses, outer_of
 )
+# Imported lazily inside _resolve_turn to avoid circular import at module load
+# (map_cog imports turn_engine indirectly via the bot; we only call it at runtime)
 
 log = logging.getLogger(__name__)
 
@@ -110,6 +112,13 @@ class TurnEngine:
             )
 
         await self._post_summary(guild_id, turn_number, summaries)
+
+        # Auto-update the live map embed (if one has been posted this session)
+        try:
+            from cogs.map_cog import auto_update_map
+            await auto_update_map(self.bot, guild_id)
+        except Exception as e:
+            log.warning(f"auto_update_map failed for guild {guild_id}: {e}")
 
     # ── Player transit ────────────────────────────────────────────────────────
     async def _process_transit(self, conn, guild_id: int, summaries: list):
