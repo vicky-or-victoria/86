@@ -7,12 +7,13 @@ Each turn:
   3.  AI moves unmoved Legion units (spawn + advance + attack)
   4.  Resolve combat on contested hexes
   5.  Apply supply drain to all active squadrons outside Hub A
-  6.  Recompute hex statuses bottom-up
-  7.  Clear GM move flags
-  8.  Purge inactive Legion units
-  9.  Record turn
-  10. Post summary
-  11. Auto-update live map and registration embeds
+  6.  Stamp hex controllers for uncontested occupation
+  7.  Recompute hex statuses bottom-up
+  8.  Clear GM move flags
+  9.  Purge inactive Legion units
+  10. Record turn
+  11. Post summary
+  12. Auto-update live map and registration embeds
 """
 
 import asyncio
@@ -260,7 +261,10 @@ class TurnEngine:
             # 5. Supply drain
             await self._apply_supply_drain(conn, guild_id, summaries)
 
-            # 6. Recompute hex statuses
+            # 6. Stamp hex controllers for uncontested occupation
+            await self._apply_occupation(conn, guild_id)
+
+            # 7. Recompute hex statuses
             await recompute_hex_statuses(conn, guild_id)
 
             # 7. Clear GM move flags
@@ -588,6 +592,49 @@ class TurnEngine:
             already = cfg["citadel_besieged"] if cfg and "citadel_besieged" in cfg.keys() else False
             if not already:
                 await _trigger_final_defense(conn, guild_id, summaries)
+
+    # ── Hex occupation ───────────────────────────────────────────────────────
+    async def _apply_occupation(self, conn, guild_id: int):
+        """
+        For every level-3 hex that has at least one occupying unit and no
+        opposing unit, set the controller to match the occupier.
+
+        This is the mechanism by which squadrons and Legion units actually
+        capture hexes — combat only fires on contested hexes, so uncontested
+        presence must be handled separately.
+
+        Priority:
+          - A hex occupied ONLY by players  → controller = 'players'
+          - A hex occupied ONLY by legion   → controller = 'legion'
+          - A hex occupied by BOTH          → leave as-is (combat handles it)
+          - A hex with NO occupiers         → leave as-is (controller persists)
+        """
+        player_rows = await conn.fetch(
+            "SELECT hex_address FROM squadrons "
+            "WHERE guild_id= AND is_active=TRUE AND in_transit=FALSE",
+            guild_id,
+        )
+        legion_rows = await conn.fetch(
+            "SELECT hex_address FROM legion_units WHERE guild_id= AND is_active=TRUE",
+            guild_id,
+        )
+
+        player_hexes = {r["hex_address"] for r in player_rows}
+        legion_hexes = {r["hex_address"] for r in legion_rows}
+
+        # Uncontested player hexes
+        for addr in player_hexes - legion_hexes:
+            await conn.execute(
+                "UPDATE hexes SET controller='players' WHERE guild_id= AND address=",
+                guild_id, addr,
+            )
+
+        # Uncontested legion hexes
+        for addr in legion_hexes - player_hexes:
+            await conn.execute(
+                "UPDATE hexes SET controller='legion' WHERE guild_id= AND address=",
+                guild_id, addr,
+            )
 
     # ── Supply drain ──────────────────────────────────────────────────────────
     async def _apply_supply_drain(self, conn, guild_id: int, summaries: list):
