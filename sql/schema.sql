@@ -4,7 +4,8 @@ CREATE TABLE IF NOT EXISTS guild_config (
     turn_interval_hours INT NOT NULL DEFAULT 8,
     last_turn_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     game_started BOOLEAN NOT NULL DEFAULT FALSE,
-    gamemaster_role_id BIGINT DEFAULT NULL  -- role that can control Legion manually
+    gamemaster_role_id BIGINT DEFAULT NULL,  -- role that can control Legion manually
+    report_channel_id BIGINT DEFAULT NULL    -- channel to post turn summaries
 );
 
 -- Hex map: level 1=outer, 2=mid, 3=inner
@@ -88,7 +89,8 @@ CREATE TABLE IF NOT EXISTS legion_gm_moves (
     guild_id BIGINT NOT NULL,
     legion_unit_id INT NOT NULL,
     target_address TEXT NOT NULL,
-    queued_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    queued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(guild_id, legion_unit_id)  -- one queued move per unit per turn
 );
 
 CREATE INDEX IF NOT EXISTS idx_hexes_guild ON hexes(guild_id);
@@ -99,6 +101,7 @@ CREATE INDEX IF NOT EXISTS idx_combat_guild ON combat_log(guild_id);
 -- Add new columns to existing tables if they don't exist (for existing deployments)
 DO $$ BEGIN
     ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS gamemaster_role_id BIGINT DEFAULT NULL;
+    ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS report_channel_id BIGINT DEFAULT NULL;
     ALTER TABLE hexes ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'neutral';
     ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS owner_name TEXT NOT NULL DEFAULT 'Handler';
     ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS home_outer TEXT NOT NULL DEFAULT 'A';
