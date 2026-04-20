@@ -294,6 +294,16 @@ class TurnEngine:
 
         await self._post_summary(guild_id, turn_number, summaries)
 
+        # Economy: fluctuate stocks and apply Command Bunker passive I.O.U. income
+        try:
+            from cogs.fob_cog import fluctuate_stocks, apply_bunker_income
+            pool2 = await get_pool()
+            async with pool2.acquire() as econ_conn:
+                await fluctuate_stocks(econ_conn, guild_id)
+                await apply_bunker_income(econ_conn, guild_id)
+        except Exception as _e:
+            log.warning(f"FOB economy tick failed: {_e}")
+
         # Auto-update the live map embed
         try:
             from cogs.map_cog import auto_update_map
@@ -553,6 +563,21 @@ class TurnEngine:
                 "UPDATE hexes SET controller=$1 WHERE guild_id=$2 AND address=$3",
                 final_ctrl, guild_id, hex_addr,
             )
+
+            # ── Award raw materials to players who survived/won combat ────────
+            try:
+                from cogs.fob_cog import award_combat_raw_materials
+                for p_unit in p_units:
+                    # Look up owner_id for this squadron
+                    sq_row = await conn.fetchrow(
+                        "SELECT owner_id FROM squadrons WHERE guild_id=$1 AND name=$2 AND is_active=TRUE LIMIT 1",
+                        guild_id, p_unit["name"],
+                    )
+                    if sq_row:
+                        won = (final_ctrl == "players")
+                        await award_combat_raw_materials(conn, guild_id, sq_row["owner_id"], won)
+            except Exception as _e:
+                log.warning(f"FOB raw material award failed: {_e}")
 
             # ── Pushback on player rout ───────────────────────────────────────
             if player_routed:
