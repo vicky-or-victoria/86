@@ -24,9 +24,14 @@ Stock Market (GM-seeded, per-guild):
 
 import random
 import math
+import io
 import discord
 from discord import app_commands
 from discord.ext import commands
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 
 from utils.db import get_pool, ensure_guild
 from utils.hexmap import SAFE_HUB, outer_of
@@ -264,7 +269,12 @@ async def award_scavenge_raw_materials(conn, guild_id: int, owner_id: int):
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def fluctuate_stocks(conn, guild_id: int):
-    """Apply per-turn random price movement based on trend."""
+    """Apply per-turn random price movement based on trend, and record history."""
+    # Get current turn number
+    turn = await conn.fetchval(
+        "SELECT COUNT(*) FROM turn_history WHERE guild_id=$1", guild_id
+    ) or 0
+
     rows = await conn.fetch("SELECT ticker, price, trend FROM stocks WHERE guild_id=$1", guild_id)
     for row in rows:
         price = row["price"]
@@ -287,6 +297,11 @@ async def fluctuate_stocks(conn, guild_id: int):
             "UPDATE stocks SET price=$1, trend=$2, last_updated=NOW() "
             "WHERE guild_id=$3 AND ticker=$4",
             new_price, new_trend, guild_id, row["ticker"],
+        )
+        # Record price history point
+        await conn.execute(
+            "INSERT INTO stock_price_history (guild_id, ticker, price, turn) VALUES ($1,$2,$3,$4)",
+            guild_id, row["ticker"], new_price, turn,
         )
 
 
@@ -475,7 +490,91 @@ async def _show_citadel_shop(interaction: discord.Interaction, guild_id: int, ow
     await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
-async def _show_stock_market(interaction: discord.Interaction, guild_id: int, owner_id: int):
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stock graph rendering
+# ─────────────────────────────────────────────────────────────────────────────
+
+TICKER_COLORS = {
+    "MECH":  "#4a90d9",
+    "FUEL":  "#e8a838",
+    "ARMS":  "#e85454",
+    "RECON": "#54c77a",
+    "SCRAP": "#a07850",
+}
+TREND_COLORS = {"bull": "#54c77a", "bear": "#e85454", "stable": "#aaaaaa", "volatile": "#e8a838"}
+
+async def generate_stock_graph(conn, guild_id: int, ticker: str) -> io.BytesIO:
+    """
+    Render a price-history line chart for one stock.
+    Returns a BytesIO PNG ready to send as a Discord file.
+    Falls back to a flat line at current price if no history exists yet.
+    """
+    rows = await conn.fetch(
+        "SELECT turn, price FROM stock_price_history "
+        "WHERE guild_id=$1 AND ticker=$2 ORDER BY turn ASC, id ASC",
+        guild_id, ticker,
+    )
+    # Also grab current live price/trend
+    live = await conn.fetchrow(
+        "SELECT price, trend FROM stocks WHERE guild_id=$1 AND ticker=$2",
+        guild_id, ticker,
+    )
+
+    if rows:
+        turns  = [r["turn"] for r in rows]
+        prices = [r["price"] for r in rows]
+    else:
+        # No history yet — show flat line at current price
+        turns  = [0, 1]
+        prices = [live["price"], live["price"]] if live else [100, 100]
+
+    color   = TICKER_COLORS.get(ticker, "#7289da")
+    trend   = live["trend"] if live else "stable"
+    t_color = TREND_COLORS.get(trend, "#aaaaaa")
+
+    fig, ax = plt.subplots(figsize=(7, 3), facecolor="#1e2124")
+    ax.set_facecolor("#2c2f33")
+
+    # Fill under the line
+    ax.fill_between(turns, prices, alpha=0.15, color=color)
+    ax.plot(turns, prices, color=color, linewidth=2, solid_capstyle="round")
+
+    # Mark the last point
+    ax.scatter([turns[-1]], [prices[-1]], color=color, s=50, zorder=5)
+    ax.annotate(
+        f"  {prices[-1]} I.O.U.s",
+        (turns[-1], prices[-1]),
+        color="#ffffff",
+        fontsize=8,
+        va="center",
+    )
+
+    # Trend badge in top-left
+    ax.text(
+        0.01, 0.94, f"▶ {trend.upper()}",
+        transform=ax.transAxes,
+        color=t_color, fontsize=8, fontweight="bold", va="top",
+    )
+
+    # Style
+    ax.set_title(f"[{ticker}] Price History", color="#ffffff", fontsize=11, pad=8)
+    ax.tick_params(colors="#aaaaaa", labelsize=7)
+    ax.yaxis.set_major_formatter(mticker.FormatStrFormatter("%d"))
+    for spine in ax.spines.values():
+        spine.set_edgecolor("#40444b")
+    ax.grid(color="#40444b", linestyle="--", linewidth=0.5, alpha=0.6)
+    ax.set_xlabel("Turn", color="#aaaaaa", fontsize=8)
+    ax.set_ylabel("Price (I.O.U.s)", color="#aaaaaa", fontsize=8)
+
+    fig.tight_layout(pad=1.2)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=120, facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buf.seek(0)
+    return buf
+
+async def _show_stock_market(interaction: discord.Interaction, guild_id: int, owner_id: int, chart_ticker: str | None = None):
     pool = await get_pool()
     async with pool.acquire() as conn:
         await seed_stocks_if_needed(conn, guild_id)
@@ -488,9 +587,12 @@ async def _show_stock_market(interaction: discord.Interaction, guild_id: int, ow
             "SELECT ticker, shares FROM stock_holdings WHERE guild_id=$1 AND owner_id=$2",
             guild_id, owner_id,
         )
+        # Render chart — default to first ticker if none specified
+        render_ticker = chart_ticker or stocks[0]["ticker"] if stocks else None
+        chart_buf = await generate_stock_graph(conn, guild_id, render_ticker) if render_ticker else None
 
     holding_map = {h["ticker"]: h["shares"] for h in holdings}
-    trend_icon = {"bull": "📈", "bear": "📉", "stable": "➡️", "volatile": "⚡"}
+    trend_icon  = {"bull": "📈", "bear": "📉", "stable": "➡️", "volatile": "⚡"}
 
     embed = discord.Embed(
         title="💹 Republic Stock Exchange",
@@ -498,11 +600,15 @@ async def _show_stock_market(interaction: discord.Interaction, guild_id: int, ow
             f"**💰 Your I.O.U.s:** `{econ['ious']}`\n"
             "Invest I.O.U.s in stocks. Prices fluctuate every Legion advance (turn).\n"
             "GMs can trigger market events to move trends.\n\n"
+            f"*Viewing chart: **{render_ticker}** — use buttons below to switch.*"
         ),
         color=discord.Color.from_rgb(40, 120, 80),
     )
+    if chart_buf:
+        embed.set_image(url=f"attachment://stock_{render_ticker}.png")
+
     for s in stocks:
-        icon = trend_icon.get(s["trend"], "➡️")
+        icon  = trend_icon.get(s["trend"], "➡️")
         owned = holding_map.get(s["ticker"], 0)
         owned_str = f" *(you own: {owned} shares)*" if owned > 0 else ""
         embed.add_field(
@@ -510,8 +616,14 @@ async def _show_stock_market(interaction: discord.Interaction, guild_id: int, ow
             value=f"**Price:** `{s['price']} I.O.U.s/share` | Trend: {s['trend'].title()}{owned_str}",
             inline=False,
         )
-    view = StockMarketView(guild_id=guild_id, owner_id=owner_id, stocks=list(stocks), ious=econ["ious"])
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    view = StockMarketView(guild_id=guild_id, owner_id=owner_id, stocks=list(stocks), ious=econ["ious"], active_ticker=render_ticker)
+
+    if chart_buf:
+        chart_file = discord.File(chart_buf, filename=f"stock_{render_ticker}.png")
+        await interaction.response.send_message(embed=embed, file=chart_file, view=view, ephemeral=True)
+    else:
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 async def _sell_raw_materials(interaction: discord.Interaction, guild_id: int, owner_id: int):
@@ -770,27 +882,97 @@ async def _buy_from_shop(interaction, guild_id, owner_id, item_key, cost, qty):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class StockMarketView(discord.ui.View):
-    def __init__(self, guild_id, owner_id, stocks, ious):
+    def __init__(self, guild_id, owner_id, stocks, ious, active_ticker=None):
         super().__init__(timeout=180)
-        self.guild_id = guild_id
-        self.owner_id = owner_id
-        self.stocks   = stocks
-        self.ious     = ious
-        # Buy/Sell buttons per stock
+        self.guild_id      = guild_id
+        self.owner_id      = owner_id
+        self.stocks        = stocks
+        self.ious          = ious
+        self.active_ticker = active_ticker
+
+        # Row 0: chart selector buttons (one per stock, highlight active)
+        for i, s in enumerate(stocks[:5]):
+            is_active = (s["ticker"] == active_ticker)
+            chart_btn = discord.ui.Button(
+                label=f"📊 {s['ticker']}",
+                style=discord.ButtonStyle.primary if is_active else discord.ButtonStyle.gray,
+                row=0,
+                custom_id=f"chart_{s['ticker']}",
+            )
+            chart_btn.callback = self._chart_cb(s["ticker"])
+            self.add_item(chart_btn)
+
+        # Row 1-2: Buy/Sell per stock
         for i, s in enumerate(stocks[:4]):
             buy_btn = discord.ui.Button(
-                label=f"Buy {s['ticker']}", style=discord.ButtonStyle.success,
-                row=i // 2, custom_id=f"stock_buy_{s['ticker']}",
+                label=f"Buy {s['ticker']}",
+                style=discord.ButtonStyle.success,
+                row=1 + i // 4,
+                custom_id=f"stock_buy_{s['ticker']}",
                 disabled=ious < s["price"],
             )
             sell_btn = discord.ui.Button(
-                label=f"Sell {s['ticker']}", style=discord.ButtonStyle.danger,
-                row=i // 2, custom_id=f"stock_sell_{s['ticker']}",
+                label=f"Sell {s['ticker']}",
+                style=discord.ButtonStyle.danger,
+                row=2,
+                custom_id=f"stock_sell_{s['ticker']}",
             )
             buy_btn.callback  = self._buy_cb(s["ticker"], s["price"])
             sell_btn.callback = self._sell_cb(s["ticker"], s["price"])
             self.add_item(buy_btn)
             self.add_item(sell_btn)
+
+    def _chart_cb(self, ticker):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.owner_id:
+                await interaction.response.send_message("❌ Not yours.", ephemeral=True)
+                return
+            # Re-render with new chart ticker — must send a new message (can't edit files in Discord)
+            await interaction.response.defer(ephemeral=True, thinking=False)
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await seed_stocks_if_needed(conn, self.guild_id)
+                econ     = await get_economy(conn, self.guild_id, self.owner_id)
+                stocks   = await conn.fetch(
+                    "SELECT ticker, name, price, trend FROM stocks WHERE guild_id=$1 ORDER BY ticker",
+                    self.guild_id,
+                )
+                holdings = await conn.fetch(
+                    "SELECT ticker, shares FROM stock_holdings WHERE guild_id=$1 AND owner_id=$2",
+                    self.guild_id, self.owner_id,
+                )
+                chart_buf = await generate_stock_graph(conn, self.guild_id, ticker)
+
+            holding_map = {h["ticker"]: h["shares"] for h in holdings}
+            trend_icon  = {"bull": "📈", "bear": "📉", "stable": "➡️", "volatile": "⚡"}
+
+            embed = discord.Embed(
+                title="💹 Republic Stock Exchange",
+                description=(
+                    f"**💰 Your I.O.U.s:** `{econ['ious']}`\n"
+                    "Invest I.O.U.s in stocks. Prices fluctuate every Legion advance (turn).\n"
+                    "GMs can trigger market events to move trends.\n\n"
+                    f"*Viewing chart: **{ticker}** — use buttons above to switch.*"
+                ),
+                color=discord.Color.from_rgb(40, 120, 80),
+            )
+            embed.set_image(url=f"attachment://stock_{ticker}.png")
+            for s in stocks:
+                icon  = trend_icon.get(s["trend"], "➡️")
+                owned = holding_map.get(s["ticker"], 0)
+                owned_str = f" *(you own: {owned} shares)*" if owned > 0 else ""
+                embed.add_field(
+                    name=f"{icon} [{s['ticker']}] {s['name']}",
+                    value=f"**Price:** `{s['price']} I.O.U.s/share` | Trend: {s['trend'].title()}{owned_str}",
+                    inline=False,
+                )
+            new_view = StockMarketView(
+                guild_id=self.guild_id, owner_id=self.owner_id,
+                stocks=list(stocks), ious=econ["ious"], active_ticker=ticker,
+            )
+            chart_file = discord.File(chart_buf, filename=f"stock_{ticker}.png")
+            await interaction.followup.send(embed=embed, file=chart_file, view=new_view, ephemeral=True)
+        return callback
 
     def _buy_cb(self, ticker, price):
         async def callback(interaction: discord.Interaction):
