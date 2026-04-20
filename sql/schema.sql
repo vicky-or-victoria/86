@@ -115,3 +115,65 @@ DO $$ BEGIN ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS transit_step INT NOT 
 DO $$ BEGIN ALTER TABLE legion_units ADD COLUMN IF NOT EXISTS manually_moved BOOLEAN NOT NULL DEFAULT FALSE; END $$;
 DO $$ BEGIN ALTER TABLE guild_config ADD COLUMN IF NOT EXISTS handler_role_id BIGINT DEFAULT NULL; END $$;
 DO $$ BEGIN ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS last_scavenged_turn INT NOT NULL DEFAULT -1; END $$;
+
+-- ─── FOB & Economy System ────────────────────────────────────────────────────
+
+-- Per-player economy (raw materials + I.O.U.s)
+CREATE TABLE IF NOT EXISTS player_economy (
+    id            SERIAL PRIMARY KEY,
+    guild_id      BIGINT NOT NULL,
+    owner_id      BIGINT NOT NULL,
+    raw_materials INT    NOT NULL DEFAULT 0,
+    ious          INT    NOT NULL DEFAULT 0,
+    UNIQUE(guild_id, owner_id)
+);
+
+-- Per-player FOB buildings (one row per building per player)
+CREATE TABLE IF NOT EXISTS fob_buildings (
+    id         SERIAL PRIMARY KEY,
+    guild_id   BIGINT NOT NULL,
+    owner_id   BIGINT NOT NULL,
+    building   TEXT   NOT NULL,  -- 'command_bunker','barracks','armory','comms_tower','supply_depot','workshop'
+    tier       INT    NOT NULL DEFAULT 0,  -- 0=not built, 1-5=upgrade level
+    UNIQUE(guild_id, owner_id, building)
+);
+
+-- Stock market: per-guild stocks (GM-seeded, randomly fluctuating)
+CREATE TABLE IF NOT EXISTS stocks (
+    id           SERIAL PRIMARY KEY,
+    guild_id     BIGINT NOT NULL,
+    ticker       TEXT   NOT NULL,  -- e.g. 'MECH', 'FUEL', 'ARMS'
+    name         TEXT   NOT NULL,
+    price        INT    NOT NULL DEFAULT 100,
+    trend        TEXT   NOT NULL DEFAULT 'stable',  -- 'bull','bear','stable','volatile'
+    last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(guild_id, ticker)
+);
+
+-- Player stock holdings
+CREATE TABLE IF NOT EXISTS stock_holdings (
+    id       SERIAL PRIMARY KEY,
+    guild_id BIGINT NOT NULL,
+    owner_id BIGINT NOT NULL,
+    ticker   TEXT   NOT NULL,
+    shares   INT    NOT NULL DEFAULT 0,
+    UNIQUE(guild_id, owner_id, ticker)
+);
+
+-- Citadel shop: GM-set processed material costs in I.O.U.s
+-- (processed materials are just items you "buy" from citadel to spend on FOB)
+CREATE TABLE IF NOT EXISTS citadel_shop (
+    id         SERIAL PRIMARY KEY,
+    guild_id   BIGINT NOT NULL,
+    item       TEXT   NOT NULL,  -- 'processed_materials_small','processed_materials_large', etc.
+    cost_ious  INT    NOT NULL DEFAULT 50,
+    quantity   INT    NOT NULL DEFAULT 1,  -- how many processed materials you receive
+    UNIQUE(guild_id, item)
+);
+
+-- ALTER TABLE additions for live deployments
+DO $$ BEGIN ALTER TABLE player_economy ADD COLUMN IF NOT EXISTS raw_materials INT NOT NULL DEFAULT 0; END $$;
+DO $$ BEGIN ALTER TABLE player_economy ADD COLUMN IF NOT EXISTS ious INT NOT NULL DEFAULT 0; END $$;
+DO $$ BEGIN ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS last_combat_turn INT NOT NULL DEFAULT -1; END $$;
+
+DO $$ BEGIN ALTER TABLE player_economy ADD COLUMN IF NOT EXISTS processed_materials INT NOT NULL DEFAULT 0; END $$;
