@@ -382,10 +382,22 @@ class HQView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="📋 My Number", style=discord.ButtonStyle.primary,
-                       custom_id="hq_status", row=0)
-    async def status_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await _hq_status(interaction)
+    @discord.ui.button(label="🪖 My F.O.B.", style=discord.ButtonStyle.primary,
+                       custom_id="hq_fob", row=0)
+    async def fob_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from cogs.fob_cog import _show_fob_overview
+        await ensure_guild(interaction.guild_id)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            sq = await conn.fetchrow(
+                "SELECT id FROM squadrons WHERE guild_id=$1 AND owner_id=$2 AND is_active=TRUE LIMIT 1",
+                interaction.guild_id, interaction.user.id,
+            )
+        if not sq:
+            await interaction.response.send_message(
+                "❌ You haven't enlisted yet.", ephemeral=True)
+            return
+        await _show_fob_overview(interaction, interaction.guild_id, interaction.user.id)
 
     @discord.ui.button(label="🚀 Reposition", style=discord.ButtonStyle.secondary,
                        custom_id="hq_move", row=0)
@@ -557,11 +569,15 @@ async def _hq_scavenge(interaction: discord.Interaction):
                 "UPDATE squadrons SET supply=$1, last_scavenged_turn=$2 WHERE id=$3",
                 new_supply, current_turn, sq["id"]
             )
+            # Award raw materials
+            from cogs.fob_cog import award_scavenge_raw_materials, RAW_MAT_SCAVENGE_SUCCESS
+            await award_scavenge_raw_materials(conn, interaction.guild_id, interaction.user.id)
             embed = discord.Embed(
-                title="🎒 Scavenge — Supplies Recovered",
+                title="🎒 Scavenge — Supplies & Materials Recovered",
                 description=(
                     f"**{sq['name']}** recovered usable parts at `{sq['hex_address']}`.\n"
-                    f"> Supply: `{sq['supply']}` → `{new_supply}` (+{gained})\n\n"
+                    f"> Supply: `{sq['supply']}` → `{new_supply}` (+{gained})\n"
+                    f"> Raw Materials: +`{RAW_MAT_SCAVENGE_SUCCESS}` *(sell at your F.O.B. for I.O.U.s)*\n\n"
                     f"*Next scavenge available after the Legion's next advance.*"
                 ),
                 color=discord.Color.green(),
@@ -719,10 +735,10 @@ class SquadronCog(commands.Cog):
             title="🖥️ Command Terminal — Squadron 86",
             description=(
                 "Welcome, Handler. Your Number is active on the front lines.\n\n"
-                "> 📋 **My Number** — View your squadron's position and combat stats\n"
+                "> 🪖 **My F.O.B.** — Forward Operating Base: buildings, economy & stock market\n"
                 "> 🚀 **Reposition** — Instructions for repositioning your Number\n"
                 "> 🗺️ **Front Lines** — View the current strategic situation\n"
-                "> 🎒 **Scavenge** — Attempt to recover supplies from the field\n"
+                "> 🎒 **Scavenge** — Recover Supply and Raw Materials from the field\n"
                 "> 📖 **Field Manual** — Rules, movement, combat, and Legion unit types"
             ),
             color=discord.Color.from_rgb(30, 60, 120),
