@@ -224,15 +224,24 @@ def compute_status(child_statuses: list[str]) -> str:
         return STATUS_PLAYER
     if l == total:
         return STATUS_LEGION
-    if n > 0:
-        # Still neutral hexes present
+
+    # All hexes are contested (no neutrals remaining)
+    if n == 0:
+        if p == l:
+            return STATUS_CONTESTED
+        if p > l:
+            return STATUS_MAJ_PLAYER
+        return STATUS_MAJ_LEGION
+
+    # Neutrals are present — only call it neutral if neither side has a majority
+    if p == 0 and l == 0:
         return STATUS_NEUTRAL
-    # No neutrals — all are either player or legion
-    if p == l:
-        return STATUS_CONTESTED
     if p > l:
         return STATUS_MAJ_PLAYER
-    return STATUS_MAJ_LEGION
+    if l > p:
+        return STATUS_MAJ_LEGION
+    # Equal player and legion presence with neutrals remaining
+    return STATUS_CONTESTED
 
 
 async def recompute_hex_statuses(conn, guild_id: int):
