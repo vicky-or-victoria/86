@@ -4,20 +4,10 @@ from discord.ext import commands
 
 from utils.db import get_pool, ensure_guild
 from utils.hexmap import ensure_hexes, SAFE_HUB, STATUS_PLAYER
+from cogs.fob_cog import DEFAULT_STOCKS as _DEFAULT_STOCKS, DEFAULT_SHOP as _FOB_DEFAULT_SHOP
 
-# Default stock values mirrored from fob_cog — used to restore prices on reset
-_DEFAULT_STOCKS = [
-    {"ticker": "MECH",  "name": "Eighty-Six Mechanica Corp",    "price": 120, "trend": "bull"},
-    {"ticker": "FUEL",  "name": "Republic Fuel & Logistics",    "price": 80,  "trend": "stable"},
-    {"ticker": "ARMS",  "name": "Citadel Armaments Ltd",        "price": 150, "trend": "stable"},
-    {"ticker": "RECON", "name": "Horizon Recon Systems",        "price": 60,  "trend": "bear"},
-    {"ticker": "SCRAP", "name": "Reclaimed Materials Exchange", "price": 40,  "trend": "volatile"},
-]
-_DEFAULT_SHOP = {
-    "processed_small":  {"cost": 30,  "quantity": 5},
-    "processed_medium": {"cost": 75,  "quantity": 15},
-    "processed_large":  {"cost": 180, "quantity": 40},
-}
+# Remap DEFAULT_SHOP to the simpler structure admin_cog uses for reset
+_DEFAULT_SHOP = {k: {"cost": v["cost"], "quantity": v["quantity"]} for k, v in _FOB_DEFAULT_SHOP.items()}
 
 
 class ResetConfirmView(discord.ui.View):
@@ -190,20 +180,31 @@ class AdminCog(commands.Cog):
                 interaction.guild_id,
             )
 
-        # --- Strip handler role from all members ---
+        # --- Strip handler role from all enlisted members ---
         try:
             async with pool.acquire() as conn2:
                 cfg = await conn2.fetchrow(
                     "SELECT handler_role_id FROM guild_config WHERE guild_id=$1", interaction.guild_id
                 )
+                # Collect all owner_ids that had squadrons before the DELETE above
+                # (squadrons already deleted, so fetch from player_economy as a proxy for anyone
+                #  who ever had an economy row — their role should be stripped)
+                enrolled_ids = await conn2.fetch(
+                    "SELECT owner_id FROM player_economy WHERE guild_id=$1", interaction.guild_id
+                )
             if cfg and cfg["handler_role_id"]:
                 role = interaction.guild.get_role(cfg["handler_role_id"])
                 if role:
-                    for member in role.members:
+                    for row in enrolled_ids:
                         try:
-                            await member.remove_roles(role, reason="War reset by Command")
+                            member = interaction.guild.get_member(row["owner_id"])
+                            if member is None:
+                                # Fall back to fetch if not cached
+                                member = await interaction.guild.fetch_member(row["owner_id"])
+                            if member and role in member.roles:
+                                await member.remove_roles(role, reason="War reset by Command")
                         except Exception:
-                            pass
+                            pass  # member left the server or other transient error
         except Exception:
             pass
 
