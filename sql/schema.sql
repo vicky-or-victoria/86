@@ -177,3 +177,17 @@ DO $$ BEGIN ALTER TABLE player_economy ADD COLUMN IF NOT EXISTS ious INT NOT NUL
 DO $$ BEGIN ALTER TABLE squadrons ADD COLUMN IF NOT EXISTS last_combat_turn INT NOT NULL DEFAULT -1; END $$;
 
 DO $$ BEGIN ALTER TABLE player_economy ADD COLUMN IF NOT EXISTS processed_materials INT NOT NULL DEFAULT 0; END $$;
+
+
+-- Stock price history (one row per ticker per turn for graphing)
+CREATE TABLE IF NOT EXISTS stock_price_history (
+    id         SERIAL PRIMARY KEY,
+    guild_id   BIGINT NOT NULL,
+    ticker     TEXT   NOT NULL,
+    price      INT    NOT NULL,
+    turn       INT    NOT NULL DEFAULT 0,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_sph_guild_ticker ON stock_price_history(guild_id, ticker);
+
+DO $$ BEGIN ALTER TABLE stock_price_history ADD COLUMN IF NOT EXISTS turn INT NOT NULL DEFAULT 0; END $$;
