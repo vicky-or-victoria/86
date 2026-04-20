@@ -273,7 +273,7 @@ class DeployZoneView(discord.ui.View):
         self.squad_type = squad_type
         for i, outer in enumerate(available_outers):
             btn = discord.ui.Button(label=f"Sector {outer}", style=discord.ButtonStyle.secondary,
-                                    custom_id=f"sqdeploy_{outer}", row=i // 4)
+                                    custom_id=f"sqdeploy_{outer}", row=min(i // 4, 4))
             btn.callback = self._make_callback(outer)
             self.add_item(btn)
 
@@ -810,12 +810,28 @@ class SquadronCog(commands.Cog):
                         f"Reachable: {', '.join(reachable) or 'none'}.", ephemeral=True)
                     return
                 entry = f"{target_mid}-C"
-                await conn.execute(
-                    "UPDATE squadrons SET in_transit=TRUE, transit_destination=$1, transit_step=2 WHERE id=$2",
-                    entry, sq["id"])
-                await interaction.response.send_message(
-                    f"🚶 **{squadron_name}** crossing to cluster `{target_mid}`, arriving at `{entry}` next turn.",
-                    ephemeral=True)
+
+                # Workshop tier 3+: adjacent-cluster transit is instant
+                workshop_tier = 0
+                try:
+                    from cogs.fob_cog import get_workshop_tier
+                    workshop_tier = await get_workshop_tier(conn, interaction.guild_id, interaction.user.id)
+                except Exception:
+                    pass
+
+                if workshop_tier >= 3:
+                    await conn.execute("UPDATE squadrons SET hex_address=$1, home_outer=$2 WHERE id=$3",
+                                       entry, outer_of(entry), sq["id"])
+                    await interaction.response.send_message(
+                        f"⚡ **{squadron_name}** crossed instantly to cluster `{target_mid}`, now at `{entry}`. "
+                        f"*(Workshop rapid transit)*", ephemeral=True)
+                else:
+                    await conn.execute(
+                        "UPDATE squadrons SET in_transit=TRUE, transit_destination=$1, transit_step=2 WHERE id=$2",
+                        entry, sq["id"])
+                    await interaction.response.send_message(
+                        f"🚶 **{squadron_name}** crossing to cluster `{target_mid}`, arriving at `{entry}` next turn.",
+                        ephemeral=True)
                 return
 
             crossable_outer = can_cross_to_outer(current)
@@ -825,30 +841,77 @@ class SquadronCog(commands.Cog):
                     f"Move to a corner position (e.g. `B-2-2`) first.", ephemeral=True)
                 return
 
+            # Workshop tier 4+: cross-sector transit takes 1 turn instead of 2
+            # Workshop tier 5: all transit instant
+            workshop_tier = 0
+            try:
+                from cogs.fob_cog import get_workshop_tier
+                workshop_tier = await get_workshop_tier(conn, interaction.guild_id, interaction.user.id)
+            except Exception:
+                pass
+
             if current_outer == SAFE_HUB:
                 entry = entry_hex_for_outer(target_outer, SAFE_HUB)
-                await conn.execute(
-                    "UPDATE squadrons SET in_transit=TRUE, transit_destination=$1, transit_step=2, home_outer=$2 WHERE id=$3",
-                    entry, target_outer, sq["id"])
-                await interaction.response.send_message(
-                    f"🚶 **{squadron_name}** deploying to **Sector {target_outer}**, arriving at `{entry}` next turn.",
-                    ephemeral=True)
+                if workshop_tier >= 5:
+                    await conn.execute(
+                        "UPDATE squadrons SET hex_address=$1, home_outer=$2, "
+                        "in_transit=FALSE, transit_destination=NULL, transit_step=0 WHERE id=$3",
+                        entry, target_outer, sq["id"])
+                    await interaction.response.send_message(
+                        f"⚡ **{squadron_name}** deployed instantly to **Sector {target_outer}** at `{entry}`. "
+                        f"*(Workshop legion-speed rail)*", ephemeral=True)
+                else:
+                    await conn.execute(
+                        "UPDATE squadrons SET in_transit=TRUE, transit_destination=$1, transit_step=2, home_outer=$2 WHERE id=$3",
+                        entry, target_outer, sq["id"])
+                    await interaction.response.send_message(
+                        f"🚶 **{squadron_name}** deploying to **Sector {target_outer}**, arriving at `{entry}` next turn.",
+                        ephemeral=True)
             elif target_outer == SAFE_HUB:
                 entry = entry_hex_for_outer(SAFE_HUB, current_outer)
-                await conn.execute(
-                    "UPDATE squadrons SET in_transit=TRUE, transit_destination=$1, transit_step=2, home_outer=$2 WHERE id=$3",
-                    entry, SAFE_HUB, sq["id"])
-                await interaction.response.send_message(
-                    f"🚶 **{squadron_name}** withdrawing to **Citadel Hub A**, arriving at `{entry}` next turn.",
-                    ephemeral=True)
+                if workshop_tier >= 5:
+                    await conn.execute(
+                        "UPDATE squadrons SET hex_address=$1, home_outer=$2, "
+                        "in_transit=FALSE, transit_destination=NULL, transit_step=0 WHERE id=$3",
+                        entry, SAFE_HUB, sq["id"])
+                    await interaction.response.send_message(
+                        f"⚡ **{squadron_name}** withdrew instantly to **Citadel Hub A** at `{entry}`. "
+                        f"*(Workshop legion-speed rail)*", ephemeral=True)
+                else:
+                    await conn.execute(
+                        "UPDATE squadrons SET in_transit=TRUE, transit_destination=$1, transit_step=2, home_outer=$2 WHERE id=$3",
+                        entry, SAFE_HUB, sq["id"])
+                    await interaction.response.send_message(
+                        f"🚶 **{squadron_name}** withdrawing to **Citadel Hub A**, arriving at `{entry}` next turn.",
+                        ephemeral=True)
             else:
                 hub_entry = entry_hex_for_outer(SAFE_HUB, current_outer)
-                await conn.execute(
-                    "UPDATE squadrons SET in_transit=TRUE, transit_destination=$1, transit_step=1, home_outer=$2 WHERE id=$3",
-                    target_outer, SAFE_HUB, sq["id"])
-                await interaction.response.send_message(
-                    f"🚶 **{squadron_name}** begins transit **Sector {current_outer} → Citadel Hub A → Sector {target_outer}**. "
-                    f"Arrives at `{hub_entry}` next turn (2 turns total).", ephemeral=True)
+                if workshop_tier >= 5:
+                    # Fully instant — land directly at destination
+                    dest_entry = entry_hex_for_outer(target_outer, SAFE_HUB)
+                    await conn.execute(
+                        "UPDATE squadrons SET hex_address=$1, home_outer=$2, "
+                        "in_transit=FALSE, transit_destination=NULL, transit_step=0 WHERE id=$3",
+                        dest_entry, target_outer, sq["id"])
+                    await interaction.response.send_message(
+                        f"⚡ **{squadron_name}** deployed instantly to **Sector {target_outer}** at `{dest_entry}`. "
+                        f"*(Workshop legion-speed rail)*", ephemeral=True)
+                elif workshop_tier >= 4:
+                    # 1 turn: skip Hub A waypoint, arrive directly at destination
+                    dest_entry = entry_hex_for_outer(target_outer, SAFE_HUB)
+                    await conn.execute(
+                        "UPDATE squadrons SET in_transit=TRUE, transit_destination=$1, transit_step=2, home_outer=$2 WHERE id=$3",
+                        dest_entry, target_outer, sq["id"])
+                    await interaction.response.send_message(
+                        f"🚶 **{squadron_name}** fast-tracked **Sector {current_outer} → Sector {target_outer}**, "
+                        f"arriving at `{dest_entry}` next turn. *(Workshop logistics network)*", ephemeral=True)
+                else:
+                    await conn.execute(
+                        "UPDATE squadrons SET in_transit=TRUE, transit_destination=$1, transit_step=1, home_outer=$2 WHERE id=$3",
+                        target_outer, SAFE_HUB, sq["id"])
+                    await interaction.response.send_message(
+                        f"🚶 **{squadron_name}** begins transit **Sector {current_outer} → Citadel Hub A → Sector {target_outer}**. "
+                        f"Arrives at `{hub_entry}` next turn (2 turns total).", ephemeral=True)
 
     @app_commands.command(name="squadron_status", description="View your Number's stats and position.")
     async def status(self, interaction: discord.Interaction):
