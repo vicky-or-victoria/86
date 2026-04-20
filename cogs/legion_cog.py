@@ -129,6 +129,13 @@ class LegionCog(commands.Cog):
         if not await is_gm(interaction):
             await interaction.response.send_message("❌ Gamemaster only.", ephemeral=True)
             return
+
+        VALID_UNIT_TYPES = {"Grauwolf", "Löwe", "Dinosauria", "Juggernaut", "Shepherd"}
+        if unit_type not in VALID_UNIT_TYPES:
+            await interaction.response.send_message(
+                f"❌ Unknown unit type `{unit_type}`. "
+                f"Valid types: {', '.join(sorted(VALID_UNIT_TYPES))}.", ephemeral=True)
+            return
         address = address.strip().upper()
         if outer_of(address) == SAFE_HUB:
             await interaction.response.send_message(
