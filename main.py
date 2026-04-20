@@ -23,6 +23,7 @@ COGS = [
     "cogs.squadron_cog",
     "cogs.admin_cog",
     "cogs.legion_cog",
+    "cogs.fob_cog",
 ]
 
 intents = discord.Intents.default()
