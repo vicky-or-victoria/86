@@ -226,18 +226,21 @@ class TurnEngine:
 
     async def _tick_all_guilds(self):
         pool = await get_pool()
-        async with pool.acquire() as conn:
-            guilds = await conn.fetch(
+        # Read guild list on a short-lived connection, then resolve each guild
+        # on its own connection so nested transactions never share state.
+        async with pool.acquire() as read_conn:
+            guilds = await read_conn.fetch(
                 "SELECT guild_id, turn_interval_hours, last_turn_at, game_started "
                 "FROM guild_config"
             )
-            now = datetime.now(timezone.utc)
-            for g in guilds:
-                if not g["game_started"]:
-                    continue
-                delta = now - g["last_turn_at"].replace(tzinfo=timezone.utc)
-                if delta.total_seconds() / 3600 >= g["turn_interval_hours"]:
-                    await self._resolve_turn(conn, g["guild_id"])
+        now = datetime.now(timezone.utc)
+        for g in guilds:
+            if not g["game_started"]:
+                continue
+            delta = now - g["last_turn_at"].replace(tzinfo=timezone.utc)
+            if delta.total_seconds() / 3600 >= g["turn_interval_hours"]:
+                async with pool.acquire() as guild_conn:
+                    await self._resolve_turn(guild_conn, g["guild_id"])
 
     async def _resolve_turn(self, conn, guild_id: int):
         log.info(f"Resolving turn for guild {guild_id}")
@@ -322,7 +325,7 @@ class TurnEngine:
     async def _process_transit(self, conn, guild_id: int, summaries: list):
         from utils.hexmap import entry_hex_for_outer, SAFE_HUB, outer_of
         in_transit = await conn.fetch(
-            "SELECT id, name, owner_name, hex_address, transit_destination, transit_step "
+            "SELECT id, name, owner_name, owner_id, hex_address, transit_destination, transit_step "
             "FROM squadrons WHERE guild_id=$1 AND in_transit=TRUE AND is_active=TRUE",
             guild_id,
         )
@@ -338,7 +341,7 @@ class TurnEngine:
                 )
                 summaries.append(
                     f"🚶 **{sq['owner_name']}'s {sq['name']}** arrived at Hub A "
-                    f"(`{hub_entry}`, en route to Hex {dest})."
+                    f"(`{hub_entry}`, en route to `{dest}`)."
                 )
             elif step == 2:
                 dest_outer = outer_of(dest)
@@ -468,7 +471,7 @@ class TurnEngine:
     # ── Combat resolution ─────────────────────────────────────────────────────
     async def _resolve_combat(self, conn, guild_id: int, turn_number: int, summaries: list):
         player_rows = await conn.fetch(
-            "SELECT hex_address, owner_name, name, attack, defense, speed, morale, supply, recon "
+            "SELECT hex_address, owner_id, owner_name, name, attack, defense, speed, morale, supply, recon "
             "FROM squadrons WHERE guild_id=$1 AND is_active=TRUE AND in_transit=FALSE",
             guild_id,
         )
@@ -491,18 +494,57 @@ class TurnEngine:
         # Track whether Final Defense needs to fire after all combats resolve
         final_defense_needed = False
 
+        # Cache FOB stat bonuses per owner to avoid repeated DB calls
+        _fob_bonus_cache: dict[int, dict] = {}
+        async def _get_fob_bonuses(owner_id: int) -> dict:
+            if owner_id not in _fob_bonus_cache:
+                try:
+                    from cogs.fob_cog import get_fob_stat_bonuses
+                    _fob_bonus_cache[owner_id] = await get_fob_stat_bonuses(conn, guild_id, owner_id)
+                except Exception:
+                    _fob_bonus_cache[owner_id] = {}
+            return _fob_bonus_cache[owner_id]
+
         for hex_addr in contested:
             p_units = player_by_hex[hex_addr]
             l_units = legion_by_hex[hex_addr]
 
+            # Build averaged base stats, then apply FOB bonuses per owner averaged across the group
             def avg(stat):
                 return sum(u[stat] for u in p_units) // len(p_units)
+
+            base_attack  = avg("attack")
+            base_defense = avg("defense")
+            base_speed   = avg("speed")
+            base_morale  = avg("morale")
+            base_supply  = avg("supply")
+            base_recon   = avg("recon")
+
+            # Average FOB bonuses across all owners on this hex
+            fob_atk = fob_def = fob_spd = fob_mor = fob_rcn = 0
+            for u in p_units:
+                b = await _get_fob_bonuses(u["owner_id"])
+                fob_atk += b.get("attack",  0)
+                fob_def += b.get("defense", 0)
+                fob_spd += b.get("speed",   0)
+                fob_mor += b.get("morale",  0)
+                fob_rcn += b.get("recon",   0)
+            n = len(p_units)
+            fob_atk = fob_atk // n
+            fob_def = fob_def // n
+            fob_spd = fob_spd // n
+            fob_mor = fob_mor // n
+            fob_rcn = fob_rcn // n
 
             player_unit = CombatUnit(
                 name=f"Allied Squadrons ({', '.join(u['name'] for u in p_units)})",
                 side="players",
-                attack=avg("attack"), defense=avg("defense"), speed=avg("speed"),
-                morale=avg("morale"), supply=avg("supply"), recon=avg("recon"),
+                attack=base_attack  + fob_atk,
+                defense=base_defense + fob_def,
+                speed=base_speed   + fob_spd,
+                morale=base_morale  + fob_mor,
+                supply=base_supply,
+                recon=base_recon   + fob_rcn,
             )
 
             fatigue_stacks = 0
@@ -672,18 +714,32 @@ class TurnEngine:
     # ── Supply drain ──────────────────────────────────────────────────────────
     async def _apply_supply_drain(self, conn, guild_id: int, summaries: list):
         """
-        Drain 1 supply per turn from every active squadron that is outside Hub A.
-        Supply floors at 0. Squadrons at 0 supply are penalised in combat (-2 rolls).
-        Players must scavenge in the field to recover supply.
+        Drain supply from every active squadron outside Hub A.
+        Supply Depot modifies this:
+          - Tier 5: drain halved (rounds down, minimum 1 unless already 0)
+          - Tier 2+: passive regen per turn (applied after drain, capped at 20 + depot cap bonus)
         """
         drained = await conn.fetch(
-            "SELECT id, name, owner_name, supply FROM squadrons "
+            "SELECT id, name, owner_id, owner_name, supply FROM squadrons "
             "WHERE guild_id=$1 AND is_active=TRUE AND in_transit=FALSE "
             "AND split_part(hex_address,'-',1) != $2",
             guild_id, SAFE_HUB,
         )
         for sq in drained:
-            new_supply = max(_SUPPLY_MIN, sq["supply"] - _SUPPLY_DRAIN_PER_TURN)
+            try:
+                from cogs.fob_cog import get_supply_depot_bonus
+                depot = await get_supply_depot_bonus(conn, guild_id, sq["owner_id"])
+            except Exception:
+                depot = {"cap_bonus": 0, "regen_bonus": 0, "drain_half": False}
+
+            drain = _SUPPLY_DRAIN_PER_TURN
+            if depot["drain_half"]:
+                drain = max(1, drain // 2)
+
+            supply_cap = 20 + depot["cap_bonus"]
+            after_drain = max(_SUPPLY_MIN, sq["supply"] - drain)
+            new_supply  = min(supply_cap, after_drain + depot["regen_bonus"])
+
             await conn.execute(
                 "UPDATE squadrons SET supply=$1 WHERE id=$2",
                 new_supply, sq["id"],
