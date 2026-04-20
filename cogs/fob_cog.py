@@ -428,10 +428,13 @@ async def _show_fob_buildings(interaction: discord.Interaction, guild_id: int, o
             current_name = bdata["tiers"][tier - 1]["name"]
             next_tier_data = bdata["tiers"][tier]
             locked = (bkey != "command_bunker" and bunker_tier < tier + 1)
-            status = (
-                f"Tier {tier} — **{current_name}**\n"
-                f"> {'🔒 Locked (upgrade Bunker first)' if locked else f'Next: {bdata[\"tiers\"][tier][\"name\"]} (`{next_tier_data[\"proc_cost\"]}` proc. mats)'}"
-            )
+            if locked:
+                next_label = "🔒 Locked (upgrade Bunker first)"
+            else:
+                next_name = bdata["tiers"][tier]["name"]
+                next_cost = next_tier_data["proc_cost"]
+                next_label = f"Next: {next_name} (`{next_cost}` proc. mats)"
+            status = f"Tier {tier} — **{current_name}**\n> {next_label}"
         embed.add_field(
             name=bdata["label"],
             value=f"{status}\n> *{bdata['description']}*",
